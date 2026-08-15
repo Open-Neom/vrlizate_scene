@@ -1,0 +1,35 @@
+name: vrlizate_scene
+description: Optional flutter_scene (Flutter GPU) adapter for the vrlizate VR
+  engine. Stereo scene rendering, head-tracked eye rigs, and gaze raycasting
+  with dwell selection over real 3D scenes.
+version: 0.1.0
+# Private package: not published to pub.dev. It will be integrated into
+# vrlizate itself once Flutter GPU ships on the stable channel.
+publish_to: 'none'
+homepage: https://github.com/Open-Neom/vrlizate_scene
+repository: https://github.com/Open-Neom/vrlizate_scene
+issue_tracker: https://github.com/Open-Neom/vrlizate_scene/issues
+
+platforms:
+  android:
+  ios:
+  macos:
+  windows:
+  linux:
+
+environment:
+  sdk: ^3.10.0
+  # flutter_scene requires Flutter GPU, which ships on the master channel.
+  flutter: ">=3.44.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_scene: ^0.20.0
+  vector_math: ^2.1.4
+  vrlizate: ^1.8.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
