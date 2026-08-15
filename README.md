@@ -42,6 +42,24 @@ StereoSceneView(
   `PerspectiveCamera`s, the `gazeRay`, and `buildStereoViews()` if you want
   to drive `SceneView` manually.
 
+## Adaptive quality
+
+`StereoSceneView` takes a `VrQualityPreset` (or auto-detects one from the
+display when omitted) and scales resolution (`pixelRatioScale`),
+anti-aliasing, and bloom per device tier:
+
+| Tier | Detection | Resolution | AA | Bloom |
+|---|---|---|---|---|
+| low | ≤60 Hz panel | 0.75× | FXAA | off |
+| medium | 60 Hz + high DPR | 1.0× | FXAA | off |
+| high | ≥90 Hz panel | 1.0× | MSAA | on |
+
+With `dynamicScaling: true` (default) frame times are monitored after a
+warmup; if the rolling average exceeds the ~45 FPS budget, quality steps
+down one tier automatically. Apps should size shadow-casting lights with
+`preset.shadowMapResolution` (read it from `StereoSceneView`'s
+`effectivePreset` or via `onQualityChanged`).
+
 ## Roadmap: integration into vrlizate
 
 This package is **private on purpose** and will not be published to pub.dev.

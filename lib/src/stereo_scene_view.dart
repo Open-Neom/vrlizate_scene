@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart';
 import 'package:vrlizate/vrlizate.dart' show GazePointer, HeadTracker;
 
+import 'quality_preset.dart';
 import 'stereo_head_rig.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
@@ -26,6 +27,9 @@ class StereoSceneView extends StatefulWidget {
     this.onGazeSelect,
     this.onGazeHoverChanged,
     this.showReticle = true,
+    this.quality,
+    this.dynamicScaling = true,
+    this.onQualityChanged,
     this.onTick,
   });
 
@@ -57,6 +61,18 @@ class StereoSceneView extends StatefulWidget {
   /// Whether to draw the center reticle with dwell progress.
   final bool showReticle;
 
+  /// Quality preset; when null it is auto-detected from the display
+  /// (refresh rate + pixel density). See [VrQualityPreset].
+  final VrQualityPreset? quality;
+
+  /// When true, frame times are monitored and quality steps down one tier
+  /// if the rolling average stays above the frame budget.
+  final bool dynamicScaling;
+
+  /// Called whenever the effective quality tier changes (auto-detection or
+  /// dynamic downscaling).
+  final void Function(VrQualityPreset preset)? onQualityChanged;
+
   /// Extra per-frame hook (elapsed, deltaSeconds).
   final void Function(Duration elapsed, double deltaSeconds)? onTick;
 
@@ -76,6 +92,25 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   final Map<String, Node> _nodesByName = {};
   final ValueNotifier<double> _dwellProgress = ValueNotifier(0);
+
+  VrQualityPreset? _preset;
+
+  /// The quality preset currently in effect.
+  VrQualityPreset? get effectivePreset => _preset;
+
+  // Dynamic frame-time scaling state.
+  double _frameTimeSum = 0;
+  int _frameTimeCount = 0;
+  static const int _warmupFrames = 90;
+  static const int _windowFrames = 120;
+  static const double _frameBudgetSeconds = 0.022; // ~45 FPS floor
+
+  void _applyPreset(VrQualityPreset preset) {
+    _preset = preset;
+    widget.scene.antiAliasingMode = preset.antiAliasing;
+    widget.scene.postProcess.bloom.enabled = preset.bloomEnabled;
+    widget.onQualityChanged?.call(preset);
+  }
 
   @override
   void initState() {
@@ -102,6 +137,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   }
 
   void _tick(Duration elapsed, double dt) {
+    _monitorFrameTime(dt);
     if (widget.gazeEnabled) {
       final hit = widget.scene.raycast(_rig.gazeRay);
       final node = hit?.node;
@@ -115,11 +151,35 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     widget.onTick?.call(elapsed, dt);
   }
 
+  /// Rolling frame-time monitor: after a warmup, if the average frame time
+  /// over a window exceeds the budget, quality steps down one tier.
+  void _monitorFrameTime(double dt) {
+    if (!widget.dynamicScaling || _preset == null) return;
+    if (_preset!.tier == VrQualityTier.low) return;
+    _frameTimeCount++;
+    if (_frameTimeCount <= _warmupFrames) return;
+    _frameTimeSum += dt;
+    final windowCount = _frameTimeCount - _warmupFrames;
+    if (windowCount < _windowFrames) return;
+    final avg = _frameTimeSum / windowCount;
+    _frameTimeSum = 0;
+    _frameTimeCount = _warmupFrames;
+    if (avg > _frameBudgetSeconds) {
+      setState(() => _applyPreset(_preset!.stepDown));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final preset =
+        _preset ?? VrQualityPreset.resolve(context, widget.quality);
+    if (_preset == null) _applyPreset(preset);
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+
     Widget child = SceneView(
       widget.scene,
       viewsBuilder: (_) => _rig.buildStereoViews(),
+      pixelRatio: dpr * preset.pixelRatioScale,
       onTick: _tick,
     );
 

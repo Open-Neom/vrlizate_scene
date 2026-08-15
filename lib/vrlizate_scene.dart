@@ -9,5 +9,6 @@
 /// `flutter config --enable-dart-data-assets`.
 library;
 
+export 'src/quality_preset.dart';
 export 'src/stereo_head_rig.dart';
 export 'src/stereo_scene_view.dart';
