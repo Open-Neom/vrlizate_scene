@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
@@ -31,7 +33,7 @@ class StereoSceneView extends StatefulWidget {
     this.zenithRecenter = true,
     this.showAlignmentDivider = true,
     this.enableTempleTap = true,
-    this.enableHandTracking = false,
+    this.enableHandTracking = true,
     this.handGlowColor = const Color(0xFF00E5FF),
     this.gazeEnabled = true,
     this.enableHaptics = true,
@@ -458,98 +460,158 @@ class _ReticlePainter extends CustomPainter {
   bool shouldRepaint(_ReticlePainter oldDelegate) => true;
 }
 
-/// Lightweight 3D holographic hand rig rendered inside a stereoscopic [Scene].
+/// Lightweight 3D dual holographic hands rig rendered inside a stereoscopic [Scene].
 class _HolographicHandRig {
   final Scene scene;
   final Color glowColor;
-  Node? palmNode;
-  final List<Node> fingerNodes = [];
-  Node? indexTipNode;
+
+  Node? rightPalmNode;
+  final List<Node> rightFingerNodes = [];
+  Node? rightTipNode;
+
+  Node? leftPalmNode;
+  final List<Node> leftFingerNodes = [];
+  Node? leftTipNode;
 
   _HolographicHandRig(this.scene, this.glowColor) {
     final col = vm.Vector4(
       glowColor.r,
       glowColor.g,
       glowColor.b,
-      0.75,
+      0.85,
     );
     final emissive = vm.Vector4(
-      glowColor.r * 0.8,
-      glowColor.g * 0.8,
-      glowColor.b * 0.8,
+      glowColor.r,
+      glowColor.g,
+      glowColor.b,
       1.0,
     );
 
-    final palmMat = PhysicallyBasedMaterial()
+    final handMat = PhysicallyBasedMaterial()
       ..baseColorFactor = col
       ..emissiveFactor = emissive
-      ..roughnessFactor = 0.2;
-
-    palmNode = Node(
-      name: 'holo_palm',
-      mesh: Mesh(CuboidGeometry(vm.Vector3(0.07, 0.02, 0.07)), palmMat),
-    );
-    scene.add(palmNode!);
-
-    for (int i = 0; i < 5; i++) {
-      final fMat = PhysicallyBasedMaterial()
-        ..baseColorFactor = col
-        ..emissiveFactor = emissive
-        ..roughnessFactor = 0.2;
-      final f = Node(
-        name: 'holo_finger_$i',
-        mesh: Mesh(CuboidGeometry(vm.Vector3(0.012, 0.012, 0.035)), fMat),
-      );
-      fingerNodes.add(f);
-      scene.add(f);
-    }
+      ..roughnessFactor = 0.15;
 
     final tipMat = PhysicallyBasedMaterial()
       ..baseColorFactor = vm.Vector4(1, 1, 1, 1)
       ..emissiveFactor = vm.Vector4(col.x, col.y, col.z, 1.0)
       ..roughnessFactor = 0.0;
 
-    indexTipNode = Node(
-      name: 'holo_tip',
-      mesh: Mesh(CuboidGeometry(vm.Vector3(0.025, 0.025, 0.025)), tipMat),
+    // 1. Right Hand
+    rightPalmNode = Node(
+      name: 'holo_palm_r',
+      mesh: Mesh(CuboidGeometry(vm.Vector3(0.065, 0.018, 0.065)), handMat),
     );
-    scene.add(indexTipNode!);
+    scene.add(rightPalmNode!);
+
+    for (int i = 0; i < 5; i++) {
+      final f = Node(
+        name: 'holo_finger_r_$i',
+        mesh: Mesh(CuboidGeometry(vm.Vector3(0.012, 0.012, 0.035)), handMat),
+      );
+      rightFingerNodes.add(f);
+      scene.add(f);
+    }
+
+    rightTipNode = Node(
+      name: 'holo_tip_r',
+      mesh: Mesh(CuboidGeometry(vm.Vector3(0.024, 0.024, 0.024)), tipMat),
+    );
+    scene.add(rightTipNode!);
+
+    // 2. Left Hand
+    leftPalmNode = Node(
+      name: 'holo_palm_l',
+      mesh: Mesh(CuboidGeometry(vm.Vector3(0.065, 0.018, 0.065)), handMat),
+    );
+    scene.add(leftPalmNode!);
+
+    for (int i = 0; i < 5; i++) {
+      final f = Node(
+        name: 'holo_finger_l_$i',
+        mesh: Mesh(CuboidGeometry(vm.Vector3(0.012, 0.012, 0.035)), handMat),
+      );
+      leftFingerNodes.add(f);
+      scene.add(f);
+    }
+
+    leftTipNode = Node(
+      name: 'holo_tip_l',
+      mesh: Mesh(CuboidGeometry(vm.Vector3(0.024, 0.024, 0.024)), tipMat),
+    );
+    scene.add(leftTipNode!);
   }
 
   void update(vm.Vector3 eyePos, vm.Quaternion orientation, double t) {
-    // Holographic hand floating in resting lap position (~45cm forward, 25cm down)
-    final localHandPos = vm.Vector3(0.14, -0.25, -0.45);
-    final worldHandPos = eyePos + orientation.rotate(localHandPos);
+    final hoverY = sin(t * 2.2) * 0.008;
 
-    if (palmNode != null) {
-      palmNode!.localTransform = vm.Matrix4.translation(worldHandPos);
+    // 1. Right Hand position (~17cm right, 22cm down, 46cm forward)
+    final localRightHand = vm.Vector3(0.17, -0.22 + hoverY, -0.46);
+    final worldRightHand = eyePos + orientation.rotate(localRightHand);
+
+    if (rightPalmNode != null) {
+      rightPalmNode!.localTransform = vm.Matrix4.translation(worldRightHand);
     }
 
-    final offsets = [
-      vm.Vector3(-0.03, 0.005, -0.035),
-      vm.Vector3(-0.012, 0.008, -0.05),
-      vm.Vector3(0.004, 0.008, -0.055),
-      vm.Vector3(0.02, 0.006, -0.045),
-      vm.Vector3(0.035, 0.004, -0.038),
+    final rightOffsets = [
+      vm.Vector3(-0.028, 0.004, -0.032), // Thumb
+      vm.Vector3(-0.012, 0.007, -0.048), // Index
+      vm.Vector3(0.004, 0.007, -0.052),  // Middle
+      vm.Vector3(0.018, 0.005, -0.044),  // Ring
+      vm.Vector3(0.032, 0.003, -0.036),  // Pinky
     ];
 
-    for (int i = 0; i < fingerNodes.length; i++) {
-      final off = orientation.rotate(offsets[i]);
-      fingerNodes[i].localTransform = vm.Matrix4.translation(worldHandPos + off);
+    for (int i = 0; i < rightFingerNodes.length; i++) {
+      final flex = sin(t * 1.8 + i) * 0.003;
+      final off = orientation.rotate(rightOffsets[i] + vm.Vector3(0, flex, 0));
+      rightFingerNodes[i].localTransform = vm.Matrix4.translation(worldRightHand + off);
     }
 
-    final tipOff = orientation.rotate(vm.Vector3(-0.012, 0.008, -0.05));
-    if (indexTipNode != null) {
-      indexTipNode!.localTransform = vm.Matrix4.translation(worldHandPos + tipOff);
+    final rightTipOff = orientation.rotate(vm.Vector3(-0.012, 0.007, -0.048));
+    if (rightTipNode != null) {
+      rightTipNode!.localTransform = vm.Matrix4.translation(worldRightHand + rightTipOff);
+    }
+
+    // 2. Left Hand position (~17cm left, 22cm down, 46cm forward)
+    final localLeftHand = vm.Vector3(-0.17, -0.22 + hoverY, -0.46);
+    final worldLeftHand = eyePos + orientation.rotate(localLeftHand);
+
+    if (leftPalmNode != null) {
+      leftPalmNode!.localTransform = vm.Matrix4.translation(worldLeftHand);
+    }
+
+    final leftOffsets = [
+      vm.Vector3(0.028, 0.004, -0.032),  // Thumb
+      vm.Vector3(0.012, 0.007, -0.048),  // Index
+      vm.Vector3(-0.004, 0.007, -0.052), // Middle
+      vm.Vector3(-0.018, 0.005, -0.044), // Ring
+      vm.Vector3(-0.032, 0.003, -0.036), // Pinky
+    ];
+
+    for (int i = 0; i < leftFingerNodes.length; i++) {
+      final flex = sin(t * 1.8 + i + 1.5) * 0.003;
+      final off = orientation.rotate(leftOffsets[i] + vm.Vector3(0, flex, 0));
+      leftFingerNodes[i].localTransform = vm.Matrix4.translation(worldLeftHand + off);
+    }
+
+    final leftTipOff = orientation.rotate(vm.Vector3(0.012, 0.007, -0.048));
+    if (leftTipNode != null) {
+      leftTipNode!.localTransform = vm.Matrix4.translation(worldLeftHand + leftTipOff);
     }
   }
 
   void dispose() {
-    if (palmNode != null) scene.remove(palmNode!);
-    for (final f in fingerNodes) {
+    if (rightPalmNode != null) scene.remove(rightPalmNode!);
+    for (final f in rightFingerNodes) {
       scene.remove(f);
     }
-    if (indexTipNode != null) scene.remove(indexTipNode!);
+    if (rightTipNode != null) scene.remove(rightTipNode!);
+
+    if (leftPalmNode != null) scene.remove(leftPalmNode!);
+    for (final f in leftFingerNodes) {
+      scene.remove(f);
+    }
+    if (leftTipNode != null) scene.remove(leftTipNode!);
   }
 }
 
