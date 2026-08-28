@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart'
     show CameraRig, GazePointer, HeadTracker, InertialTapDetector;
 
@@ -30,6 +31,8 @@ class StereoSceneView extends StatefulWidget {
     this.zenithRecenter = true,
     this.showAlignmentDivider = true,
     this.enableTempleTap = true,
+    this.enableHandTracking = false,
+    this.handGlowColor = const Color(0xFF00E5FF),
     this.gazeEnabled = true,
     this.enableHaptics = true,
     this.gazeDwellSeconds = 2.0,
@@ -54,6 +57,12 @@ class StereoSceneView extends StatefulWidget {
 
   /// Whether physical tap on visor/temple triggers instant gaze select and double-tap recenters.
   final bool enableTempleTap;
+
+  /// Whether to render and track 3D holographic hands in the stereoscopic scene.
+  final bool enableHandTracking;
+
+  /// Color accent for the 3D holographic hands glowing energy joints.
+  final Color handGlowColor;
 
   /// Whether to render a central physical alignment divider and notch ticks.
   final bool showAlignmentDivider;
@@ -196,10 +205,17 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       final node = _nodesByName[id];
       widget.onGazeHoverChanged?.call(node);
     };
+
+    if (widget.enableHandTracking) {
+      _handRig = _HolographicHandRig(widget.scene, widget.handGlowColor);
+    }
   }
+
+  _HolographicHandRig? _handRig;
 
   @override
   void dispose() {
+    _handRig?.dispose();
     _tapDetector?.dispose();
     if (widget.headTracker == null) _headTracker.stop();
     _dwellProgress.dispose();
@@ -209,6 +225,11 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   void _tick(Duration elapsed, double dt) {
     _monitorFrameTime(dt);
+
+    final t = elapsed.inMicroseconds / 1000000.0;
+    if (_handRig != null) {
+      _handRig!.update(_rig.eyeCenter, _rig.cameraRig.rotation, t);
+    }
 
     // Hands-free zenith recenter (looking up > 55°).
     if (widget.zenithRecenter) {
@@ -436,3 +457,99 @@ class _ReticlePainter extends CustomPainter {
   @override
   bool shouldRepaint(_ReticlePainter oldDelegate) => true;
 }
+
+/// Lightweight 3D holographic hand rig rendered inside a stereoscopic [Scene].
+class _HolographicHandRig {
+  final Scene scene;
+  final Color glowColor;
+  Node? palmNode;
+  final List<Node> fingerNodes = [];
+  Node? indexTipNode;
+
+  _HolographicHandRig(this.scene, this.glowColor) {
+    final col = vm.Vector4(
+      glowColor.r,
+      glowColor.g,
+      glowColor.b,
+      0.75,
+    );
+    final emissive = vm.Vector4(
+      glowColor.r * 0.8,
+      glowColor.g * 0.8,
+      glowColor.b * 0.8,
+      1.0,
+    );
+
+    final palmMat = PhysicallyBasedMaterial()
+      ..baseColorFactor = col
+      ..emissiveFactor = emissive
+      ..roughnessFactor = 0.2;
+
+    palmNode = Node(
+      name: 'holo_palm',
+      mesh: Mesh(CuboidGeometry(vm.Vector3(0.07, 0.02, 0.07)), palmMat),
+    );
+    scene.add(palmNode!);
+
+    for (int i = 0; i < 5; i++) {
+      final fMat = PhysicallyBasedMaterial()
+        ..baseColorFactor = col
+        ..emissiveFactor = emissive
+        ..roughnessFactor = 0.2;
+      final f = Node(
+        name: 'holo_finger_$i',
+        mesh: Mesh(CuboidGeometry(vm.Vector3(0.012, 0.012, 0.035)), fMat),
+      );
+      fingerNodes.add(f);
+      scene.add(f);
+    }
+
+    final tipMat = PhysicallyBasedMaterial()
+      ..baseColorFactor = vm.Vector4(1, 1, 1, 1)
+      ..emissiveFactor = vm.Vector4(col.x, col.y, col.z, 1.0)
+      ..roughnessFactor = 0.0;
+
+    indexTipNode = Node(
+      name: 'holo_tip',
+      mesh: Mesh(CuboidGeometry(vm.Vector3(0.025, 0.025, 0.025)), tipMat),
+    );
+    scene.add(indexTipNode!);
+  }
+
+  void update(vm.Vector3 eyePos, vm.Quaternion orientation, double t) {
+    // Holographic hand floating in resting lap position (~45cm forward, 25cm down)
+    final localHandPos = vm.Vector3(0.14, -0.25, -0.45);
+    final worldHandPos = eyePos + orientation.rotate(localHandPos);
+
+    if (palmNode != null) {
+      palmNode!.localTransform = vm.Matrix4.translation(worldHandPos);
+    }
+
+    final offsets = [
+      vm.Vector3(-0.03, 0.005, -0.035),
+      vm.Vector3(-0.012, 0.008, -0.05),
+      vm.Vector3(0.004, 0.008, -0.055),
+      vm.Vector3(0.02, 0.006, -0.045),
+      vm.Vector3(0.035, 0.004, -0.038),
+    ];
+
+    for (int i = 0; i < fingerNodes.length; i++) {
+      final off = orientation.rotate(offsets[i]);
+      fingerNodes[i].localTransform = vm.Matrix4.translation(worldHandPos + off);
+    }
+
+    final tipOff = orientation.rotate(vm.Vector3(-0.012, 0.008, -0.05));
+    if (indexTipNode != null) {
+      indexTipNode!.localTransform = vm.Matrix4.translation(worldHandPos + tipOff);
+    }
+  }
+
+  void dispose() {
+    if (palmNode != null) scene.remove(palmNode!);
+    for (final f in fingerNodes) {
+      scene.remove(f);
+    }
+    if (indexTipNode != null) scene.remove(indexTipNode!);
+  }
+}
+
