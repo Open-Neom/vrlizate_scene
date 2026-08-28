@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
-import 'package:vrlizate/vrlizate.dart' show GazePointer, HeadTracker;
+import 'package:vrlizate/vrlizate.dart' show CameraRig, GazePointer, HeadTracker;
 
 import 'quality_preset.dart';
 import 'stereo_head_rig.dart';
+import 'vr_look.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
 /// vrlizate input stack.
@@ -21,8 +23,13 @@ class StereoSceneView extends StatefulWidget {
     required this.scene,
     this.rig,
     this.headTracker,
+    this.ipd,
     this.touchFallback = true,
+    this.doubleTapToRecenter = true,
+    this.zenithRecenter = true,
+    this.showAlignmentDivider = true,
     this.gazeEnabled = true,
+    this.enableHaptics = true,
     this.gazeDwellSeconds = 2.0,
     this.onGazeSelect,
     this.onGazeHoverChanged,
@@ -31,7 +38,23 @@ class StereoSceneView extends StatefulWidget {
     this.dynamicScaling = true,
     this.onQualityChanged,
     this.onTick,
+    this.look,
   });
+
+  /// Interpupillary distance in meters (defaults to 0.064m / 64mm).
+  final double? ipd;
+
+  /// Whether double-tapping on screen recenters the horizontal gaze heading.
+  final bool doubleTapToRecenter;
+
+  /// Whether looking straight up (~55° pitch) triggers hands-free recentering.
+  final bool zenithRecenter;
+
+  /// Whether to render a central physical alignment divider and notch ticks.
+  final bool showAlignmentDivider;
+
+  /// Whether tactile haptic feedback is enabled for gaze dwell and interactions.
+  final bool enableHaptics;
 
   /// The flutter_scene scene to render in stereo.
   final Scene scene;
@@ -76,22 +99,33 @@ class StereoSceneView extends StatefulWidget {
   /// Extra per-frame hook (elapsed, deltaSeconds).
   final void Function(Duration elapsed, double deltaSeconds)? onTick;
 
+  /// Optional shared visual look (tone mapping, bloom, vignette, fog, AO).
+  /// Re-applied whenever the effective quality preset changes, so expensive
+  /// features (bloom, AO) stay in sync with dynamic downscaling.
+  final VrLook? look;
+
   @override
   State<StereoSceneView> createState() => _StereoSceneViewState();
 }
 
 class _StereoSceneViewState extends State<StereoSceneView> {
   late final StereoHeadRig _rig = widget.rig ??
-      StereoHeadRig(); // default: eye at origin-ish, set by app if needed
+      StereoHeadRig(
+        ipd: widget.ipd ?? CameraRig.defaultIpd,
+      );
   late final HeadTracker _headTracker =
       widget.headTracker ?? HeadTracker(target: _rig);
   late final GazePointer _gaze = GazePointer(
     cameraRig: _rig.cameraRig,
     dwellDuration: widget.gazeDwellSeconds,
+    enableHaptics: widget.enableHaptics,
   );
 
   final Map<String, Node> _nodesByName = {};
   final ValueNotifier<double> _dwellProgress = ValueNotifier(0);
+  final ValueNotifier<double> _zenithProgress = ValueNotifier(0);
+  double _zenithTimer = 0;
+  bool _zenithTriggered = false;
 
   VrQualityPreset? _preset;
 
@@ -101,14 +135,15 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   // Dynamic frame-time scaling state.
   double _frameTimeSum = 0;
   int _frameTimeCount = 0;
-  static const int _warmupFrames = 90;
-  static const int _windowFrames = 120;
-  static const double _frameBudgetSeconds = 0.022; // ~45 FPS floor
+  static const int _warmupFrames = 30; // 0.5s warmup
+  static const int _windowFrames = 45; // ~0.75s evaluation window
+  static const double _frameBudgetSeconds = 0.018; // ~55 FPS budget
 
   void _applyPreset(VrQualityPreset preset) {
     _preset = preset;
     widget.scene.antiAliasingMode = preset.antiAliasing;
     widget.scene.postProcess.bloom.enabled = preset.bloomEnabled;
+    widget.look?.applyToScene(widget.scene, preset);
     widget.onQualityChanged?.call(preset);
   }
 
@@ -118,26 +153,55 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     if (widget.rig == null) {
       _rig.eyeCenter.setValues(0, 1.6, 0);
     }
-    _gaze.onDwellSelect = (id) {
+    if (widget.ipd != null) {
+      _rig.ipd = widget.ipd!;
+    }
+    _headTracker.start();
+
+    _gaze.onDwellProgress = (_, p) => _dwellProgress.value = p;
+    _gaze.onGazeExit = (_) => _dwellProgress.value = 0;
+    _gaze.onGazeSelect = (id) {
+      _dwellProgress.value = 0;
       final node = _nodesByName[id];
       if (node != null) widget.onGazeSelect?.call(node);
     };
-    _gaze.onGazeEnter = (id) =>
-        widget.onGazeHoverChanged?.call(_nodesByName[id]);
-    _gaze.onGazeExit = (_) => widget.onGazeHoverChanged?.call(null);
-    _gaze.onDwellProgress = (_, progress) => _dwellProgress.value = progress;
-    if (widget.headTracker == null) _headTracker.start();
+    _gaze.onGazeEnter = (id) {
+      final node = _nodesByName[id];
+      widget.onGazeHoverChanged?.call(node);
+    };
   }
 
   @override
   void dispose() {
     if (widget.headTracker == null) _headTracker.stop();
     _dwellProgress.dispose();
+    _zenithProgress.dispose();
     super.dispose();
   }
 
   void _tick(Duration elapsed, double dt) {
     _monitorFrameTime(dt);
+
+    // Hands-free zenith recenter (looking up > 55°).
+    if (widget.zenithRecenter) {
+      if (_rig.cameraRig.pitch > 0.95) {
+        _zenithTimer += dt;
+        _zenithProgress.value = (_zenithTimer / 0.8).clamp(0.0, 1.0);
+        if (_zenithTimer >= 0.8 && !_zenithTriggered) {
+          _zenithTriggered = true;
+          _headTracker.recenter();
+          _rig.recenter();
+          if (widget.enableHaptics) {
+            HapticFeedback.mediumImpact();
+          }
+        }
+      } else {
+        _zenithTimer = 0;
+        _zenithTriggered = false;
+        if (_zenithProgress.value != 0) _zenithProgress.value = 0;
+      }
+    }
+
     if (widget.gazeEnabled) {
       final hit = widget.scene.raycast(_rig.gazeRay);
       final node = hit?.node;
@@ -183,23 +247,40 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       onTick: _tick,
     );
 
-    if (widget.touchFallback) {
+    if (widget.touchFallback || widget.doubleTapToRecenter) {
       child = GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onPanUpdate: (d) =>
-            _headTracker.applyTouchDelta(d.delta.dx, d.delta.dy),
+        onPanUpdate: widget.touchFallback
+            ? (d) => _headTracker.applyTouchDelta(d.delta.dx, d.delta.dy)
+            : null,
+        onDoubleTap: widget.doubleTapToRecenter
+            ? () {
+                _headTracker.recenter();
+                _rig.recenter();
+                if (widget.enableHaptics) {
+                  HapticFeedback.mediumImpact();
+                }
+              }
+            : null,
         child: child,
       );
     }
 
-    if (widget.showReticle && widget.gazeEnabled) {
+    if ((widget.showReticle && widget.gazeEnabled) ||
+        widget.showAlignmentDivider ||
+        widget.zenithRecenter) {
       child = Stack(
         fit: StackFit.expand,
         children: [
           child,
           IgnorePointer(
             child: CustomPaint(
-              painter: _ReticlePainter(progress: _dwellProgress),
+              painter: _ReticlePainter(
+                progress: _dwellProgress,
+                zenithProgress: _zenithProgress,
+                showDivider: widget.showAlignmentDivider,
+                showReticle: widget.showReticle && widget.gazeEnabled,
+              ),
             ),
           ),
         ],
@@ -210,32 +291,52 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   }
 }
 
-/// Center-screen gaze reticle with a dwell-progress arc.
+/// Center gaze reticles for both stereoscopic eyes with a dwell-progress arc,
+/// physical alignment divider, and zenith calibration target.
 class _ReticlePainter extends CustomPainter {
-  _ReticlePainter({required this.progress}) : super(repaint: progress);
+  _ReticlePainter({
+    required this.progress,
+    required this.zenithProgress,
+    this.showDivider = true,
+    this.showReticle = true,
+  }) : super(repaint: Listenable.merge([progress, zenithProgress]));
 
   final ValueNotifier<double> progress;
+  final ValueNotifier<double> zenithProgress;
+  final bool showDivider;
+  final bool showReticle;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
+  void _drawReticle(Canvas canvas, Offset center, double p, Paint ring, Paint dot, Paint arc) {
+    canvas.drawCircle(center, 9, ring);
+    canvas.drawCircle(center, 2.5, dot);
+    if (p > 0) {
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: 13),
+        -3.141592653589793 / 2,
+        p * 2 * 3.141592653589793,
+        false,
+        arc,
+      );
+    }
+  }
+
+  void _drawZenithTarget(Canvas canvas, Offset center, double p) {
     final ring = Paint()
-      ..color = Colors.white.withValues(alpha: 0.7)
+      ..color = Colors.cyanAccent.withValues(alpha: 0.6)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
-    final dot = Paint()..color = Colors.white.withValues(alpha: 0.9);
+    final dot = Paint()..color = Colors.cyanAccent;
     final arc = Paint()
-      ..color = Colors.cyanAccent
+      ..color = Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
 
-    canvas.drawCircle(center, 10, ring);
-    canvas.drawCircle(center, 2, dot);
-    final p = progress.value;
+    canvas.drawCircle(center, 16, ring);
+    canvas.drawCircle(center, 3, dot);
     if (p > 0) {
       canvas.drawArc(
-        Rect.fromCircle(center: center, radius: 14),
+        Rect.fromCircle(center: center, radius: 21),
         -3.141592653589793 / 2,
         p * 2 * 3.141592653589793,
         false,
@@ -245,5 +346,65 @@ class _ReticlePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_ReticlePainter oldDelegate) => false;
+  void paint(Canvas canvas, Size size) {
+    // 1. Central Physical Alignment Divider
+    if (showDivider) {
+      final dividerX = size.width * 0.5;
+      final dividerPaint = Paint()
+        ..color = Colors.black
+        ..strokeWidth = 3;
+      canvas.drawLine(
+        Offset(dividerX, 0),
+        Offset(dividerX, size.height),
+        dividerPaint,
+      );
+
+      // Alignment Notch Ticks (top & bottom)
+      final tickPaint = Paint()
+        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.4)
+        ..strokeWidth = 2;
+      canvas.drawLine(
+        Offset(dividerX, 0),
+        Offset(dividerX, 16),
+        tickPaint,
+      );
+      canvas.drawLine(
+        Offset(dividerX, size.height - 16),
+        Offset(dividerX, size.height),
+        tickPaint,
+      );
+    }
+
+    // 2. Stereoscopic Gaze Reticles
+    if (showReticle) {
+      final leftCenter = Offset(size.width * 0.25, size.height * 0.5);
+      final rightCenter = Offset(size.width * 0.75, size.height * 0.5);
+      final ring = Paint()
+        ..color = Colors.white.withValues(alpha: 0.7)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
+      final dot = Paint()..color = Colors.white.withValues(alpha: 0.95);
+      final arc = Paint()
+        ..color = Colors.cyanAccent
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round;
+
+      final p = progress.value;
+      _drawReticle(canvas, leftCenter, p, ring, dot, arc);
+      _drawReticle(canvas, rightCenter, p, ring, dot, arc);
+    }
+
+    // 3. Hands-Free Zenith Recenter Target (when looking straight up)
+    final zp = zenithProgress.value;
+    if (zp > 0) {
+      final leftZenith = Offset(size.width * 0.25, size.height * 0.18);
+      final rightZenith = Offset(size.width * 0.75, size.height * 0.18);
+      _drawZenithTarget(canvas, leftZenith, zp);
+      _drawZenithTarget(canvas, rightZenith, zp);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ReticlePainter oldDelegate) => true;
 }

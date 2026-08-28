@@ -26,6 +26,10 @@ final scene = Scene();
 
 StereoSceneView(
   scene: scene,
+  showAlignmentDivider: true, // Physical visor center divider with alignment ticks
+  zenithRecenter: true,       // Hands-free recentering when looking straight up (>55°)
+  doubleTapToRecenter: true,  // Double tap to realign forward heading
+  enableHaptics: true,        // Tactile micro-haptic pulses on dwell/selection
   gazeDwellSeconds: 1.2,
   onGazeSelect: (node) {
     // Dwell-selected a named node — no joystick, no buttons.
@@ -35,6 +39,12 @@ StereoSceneView(
 
 - `StereoSceneView` renders the scene as two half-screen eye views, driven by
   the vrlizate `HeadTracker` (gyroscope) with touch-drag fallback.
+- **Dual Stereoscopic Reticles**: Rendered at 25% (left eye) and 75% (right eye)
+  screen width with animated dwell progress arcs.
+- **Visor Physical Alignment Guide**: Renders a central 3px black dividing bar
+  with top and bottom alignment ticks to center the smartphone physically in VR visors.
+- **Hands-Free Zenith Recenter**: Tilting the head up ($>55^\circ$) displays a 🎯
+  calibration target; holding gaze for 0.8s recalibrates the forward heading hands-free.
 - Center-gaze raycasting runs every frame through the vrlizate `GazePointer`
   (adaptive dwell + grace period). Only nodes with a non-empty `Node.name`
   are gaze-interactive.
@@ -42,7 +52,7 @@ StereoSceneView(
   `PerspectiveCamera`s, the `gazeRay`, and `buildStereoViews()` if you want
   to drive `SceneView` manually.
 
-## Adaptive quality
+## Adaptive Quality
 
 `StereoSceneView` takes a `VrQualityPreset` (or auto-detects one from the
 display when omitted) and scales resolution (`pixelRatioScale`),
@@ -50,12 +60,12 @@ anti-aliasing, and bloom per device tier:
 
 | Tier | Detection | Resolution | AA | Bloom |
 |---|---|---|---|---|
-| low | ≤60 Hz panel | 0.75× | FXAA | off |
-| medium | 60 Hz + high DPR | 1.0× | FXAA | off |
-| high | ≥90 Hz panel | 1.0× | MSAA | on |
+| low | Low DPR or budget panels (Moto G20) | 0.75× | None | off |
+| medium | Mid-range (60 Hz high DPR / 90 Hz med DPR) | 0.90× | FXAA | off |
+| high | True Flagship (≥90 Hz & DPR ≥ 2.7, S25 Ultra) | 1.00× | MSAA | on |
 
 With `dynamicScaling: true` (default) frame times are monitored after a
-warmup; if the rolling average exceeds the ~45 FPS budget, quality steps
+warmup; if the rolling average exceeds the ~55 FPS budget within 1.2s, quality steps
 down one tier automatically. Apps should size shadow-casting lights with
 `preset.shadowMapResolution` (read it from `StereoSceneView`'s
 `effectivePreset` or via `onQualityChanged`).

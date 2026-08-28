@@ -12,3 +12,24 @@ library;
 export 'src/quality_preset.dart';
 export 'src/stereo_head_rig.dart';
 export 'src/stereo_scene_view.dart';
+export 'src/vr_look.dart';
+
+// 3D widgets live in their own module; re-exported here so existing
+// vrlizate_scene consumers (demos) keep working with a single import.
+export 'package:vrlizate_widgets/vrlizate_widgets.dart'
+    show
+        VrControl,
+        VrControlRegistry,
+        VrButton3D,
+        VrToggle3D,
+        VrDropdown3D,
+        VrPanel3D,
+        VrWidget,
+        VrStatelessWidget,
+        VrStatefulWidget,
+        VrWidgetState,
+        VrSpatial,
+        VrDragController,
+        VrSlider3D,
+        controlMaterial,
+        VrControlMeshBuilder;

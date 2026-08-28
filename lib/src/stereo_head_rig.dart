@@ -37,6 +37,9 @@ class StereoHeadRig implements RotationTarget {
   @override
   void reset() => cameraRig.reset();
 
+  /// Recenters the horizontal head heading (Yaw = 0°).
+  void recenter() => cameraRig.recenter();
+
   /// World-space midpoint between the eyes.
   vm.Vector3 get eyeCenter => cameraRig.position;
   set eyeCenter(vm.Vector3 value) => cameraRig.position = value;
