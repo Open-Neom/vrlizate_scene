@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
-import 'package:vrlizate/vrlizate.dart' show CameraRig, GazePointer, HeadTracker;
+import 'package:vrlizate/vrlizate.dart'
+    show CameraRig, GazePointer, HeadTracker, InertialTapDetector;
 
 import 'quality_preset.dart';
 import 'stereo_head_rig.dart';
@@ -28,6 +29,7 @@ class StereoSceneView extends StatefulWidget {
     this.doubleTapToRecenter = true,
     this.zenithRecenter = true,
     this.showAlignmentDivider = true,
+    this.enableTempleTap = true,
     this.gazeEnabled = true,
     this.enableHaptics = true,
     this.gazeDwellSeconds = 2.0,
@@ -49,6 +51,9 @@ class StereoSceneView extends StatefulWidget {
 
   /// Whether looking straight up (~55° pitch) triggers hands-free recentering.
   final bool zenithRecenter;
+
+  /// Whether physical tap on visor/temple triggers instant gaze select and double-tap recenters.
+  final bool enableTempleTap;
 
   /// Whether to render a central physical alignment divider and notch ticks.
   final bool showAlignmentDivider;
@@ -127,6 +132,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   double _zenithTimer = 0;
   bool _zenithTriggered = false;
 
+  InertialTapDetector? _tapDetector;
   VrQualityPreset? _preset;
 
   /// The quality preset currently in effect.
@@ -158,6 +164,27 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     }
     _headTracker.start();
 
+    // Zero-latency temple/visor tap trigger
+    if (widget.enableTempleTap) {
+      _tapDetector = InertialTapDetector(
+        onSingleTap: () {
+          final currentId = _gaze.gazeTargetId;
+          if (currentId != null) {
+            final node = _nodesByName[currentId];
+            if (node != null) {
+              widget.onGazeSelect?.call(node);
+              if (widget.enableHaptics) HapticFeedback.selectionClick();
+            }
+          }
+        },
+        onDoubleTap: () {
+          _headTracker.recenter();
+          _rig.recenter();
+          if (widget.enableHaptics) HapticFeedback.mediumImpact();
+        },
+      )..start();
+    }
+
     _gaze.onDwellProgress = (_, p) => _dwellProgress.value = p;
     _gaze.onGazeExit = (_) => _dwellProgress.value = 0;
     _gaze.onGazeSelect = (id) {
@@ -173,6 +200,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   @override
   void dispose() {
+    _tapDetector?.dispose();
     if (widget.headTracker == null) _headTracker.stop();
     _dwellProgress.dispose();
     _zenithProgress.dispose();
