@@ -2,7 +2,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_scene/scene.dart' show AntiAliasingMode;
 
 /// Device performance tier for VR rendering.
-enum VrQualityTier { low, medium, high }
+enum VrQualityTier { low, medium, high, ultra }
 
 /// Quality settings for GPU VR rendering, applied by `StereoSceneView`.
 ///
@@ -20,7 +20,7 @@ class VrQualityPreset {
 
   final VrQualityTier tier;
 
-  /// Multiplier over the device pixel ratio (1.0 = native resolution).
+  /// Multiplier over the device pixel ratio (1.0 = native resolution, 1.15 = supersampling).
   final double pixelRatioScale;
 
   /// Scene anti-aliasing technique.
@@ -50,10 +50,19 @@ class VrQualityPreset {
     bloomEnabled: false,
   );
 
-  /// Flagships (S25 Ultra, Snapdragon 8 Elite, high DPR ≥ 2.7): full fidelity with MSAA and bloom.
+  /// High tier: native resolution with MSAA and bloom.
   static const high = VrQualityPreset(
     tier: VrQualityTier.high,
     pixelRatioScale: 1.0,
+    antiAliasing: AntiAliasingMode.msaa,
+    shadowMapResolution: 2048,
+    bloomEnabled: true,
+  );
+
+  /// Ultra tier: razor-sharp 1.15x supersampling, MSAA and HDR bloom for maximum VR lens clarity.
+  static const ultra = VrQualityPreset(
+    tier: VrQualityTier.ultra,
+    pixelRatioScale: 1.15,
     antiAliasing: AntiAliasingMode.msaa,
     shadowMapResolution: 2048,
     bloomEnabled: true,
@@ -63,6 +72,7 @@ class VrQualityPreset {
         VrQualityTier.low => low,
         VrQualityTier.medium => medium,
         VrQualityTier.high => high,
+        VrQualityTier.ultra => ultra,
       };
 
   /// Tier heuristic from display characteristics.
@@ -90,6 +100,7 @@ class VrQualityPreset {
 
   /// The next tier down, for dynamic frame-time-based downscaling.
   VrQualityPreset get stepDown => switch (tier) {
+        VrQualityTier.ultra => high,
         VrQualityTier.high => medium,
         VrQualityTier.medium => low,
         VrQualityTier.low => low,

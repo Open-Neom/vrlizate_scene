@@ -92,6 +92,30 @@ class VrLook {
     fogVisibilityMeters: 80,
   );
 
+  /// High-voltage cyber/neon aesthetic: deep pitch blacks, radiant cyan/magenta bloom, high contrast.
+  static const cyberpunk = VrLook(
+    exposure: 1.12,
+    saturation: 1.25,
+    contrast: 1.18,
+    bloomIntensity: 0.48,
+    bloomThreshold: 0.75,
+    vignetteIntensity: 0.28,
+    ambientOcclusion: true,
+  );
+
+  /// Deep space & nebula aesthetic: cosmic atmosphere, high starlight exposure and gentle cosmic fog.
+  static final stellar = VrLook(
+    exposure: 0.95,
+    saturation: 1.15,
+    contrast: 1.12,
+    bloomIntensity: 0.42,
+    bloomThreshold: 0.82,
+    vignetteIntensity: 0.20,
+    fogColor: vm.Vector3(0.01, 0.02, 0.05),
+    fogVisibilityMeters: 120,
+    ambientOcclusion: true,
+  );
+
   /// Writes this look into a live [EnvironmentSettings] snapshot, scaled by
   /// [preset]. Pure and allocation-free — safe to call on tier changes.
   void applyTo(EnvironmentSettings s, VrQualityPreset preset) {
