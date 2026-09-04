@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 — 2026-09-03
+
+### Added
+- **Stereoscopic Optical Convergence (`StereoHeadRig.convergenceDistance = 1.8m`)**:
+  - Replaced parallel infinity-only cameras with exact toe-in convergence aiming at a comfortable 1.8m focal plane (vergence-accommodation conflict mitigation).
+  - Eliminates diplopia (double vision) and eye fatigue for near- and mid-field objects (1.0m to 2.5m).
+  - Added analytical angular screen parallax function `parallaxAtDistance(distanceMeters)`: crossed (negative / pop-out), zero (focal comfort plane), and uncrossed (positive / deep into the scene).
+  - Exposed per-eye convergence gaze rays (`leftGazeRay`, `rightGazeRay`) intersecting exactly at the convergence point.
+- **Zero-GC `VrInputArbiter` Gaze Dwell Suppression**:
+  - `StereoSceneView` now integrates with `VrInputArbiter`: automatically suppresses gaze dwell progression and accidental clicks whenever active higher-priority input sources (remote smartphone joystick, physical gamepad, laser pointer) are engaged.
+- **Community Input Interfaces Re-Export**:
+  - Re-exported `VrInputDriver`, `VrInputSink`, `VrGamepadDriver`, `VrGamepadButton`, and `VrGamepadStick` from `package:vrlizate_scene/vrlizate_scene.dart`.
+
 ## 0.2.0 — 2026-08-27
 
 ### Added

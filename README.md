@@ -48,8 +48,15 @@ StereoSceneView(
 - Center-gaze raycasting runs every frame through the vrlizate `GazePointer`
   (adaptive dwell + grace period). Only nodes with a non-empty `Node.name`
   are gaze-interactive.
+- **Stereoscopic Optical Convergence (1.8m Comfort Plane)**: `StereoHeadRig` targets
+  a finite convergence point at $1.8\text{m}$ (vergence-accommodation conflict comfort distance)
+  with toe-in angle $\theta \approx 1.02^\circ$, eliminating diplopia (double vision) and eye
+  strain on mid-field UI and objects.
+- **Zero-GC Input Arbiter Integration (`VrInputArbiter`)**: `StereoSceneView` respects
+  priority inputs — whenever an external joystick or physical controller is active,
+  gaze dwell progress is smoothly suppressed to prevent accidental selections.
 - `StereoHeadRig` wraps a vrlizate `CameraRig` and exposes per-eye
-  `PerspectiveCamera`s, the `gazeRay`, and `buildStereoViews()` if you want
+  `PerspectiveCamera`s, individual `leftGazeRay`/`rightGazeRay`, and `buildStereoViews()` if you want
   to drive `SceneView` manually.
 
 ## Adaptive Quality
