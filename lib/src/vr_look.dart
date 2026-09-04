@@ -32,11 +32,24 @@ class VrLook {
     this.fogColor,
     this.fogVisibilityMeters = 0.0,
     this.ambientOcclusion = false,
+    this.barrelDistortionK1 = 0.0,
+    this.barrelDistortionK2 = 0.0,
+    this.chromaticAberrationOffset = 0.0,
   });
 
   /// Tone mapping operator. AgX preserves bright hues better than the
   /// engine default (PBR Neutral) on emissive-heavy VR scenes.
   final ToneMappingMode toneMapping;
+
+  /// Radial lens distortion coefficient k1 (Brown-Conrady model).
+  /// Counteracts pincushion distortion of VR lenses. 0 = disabled.
+  final double barrelDistortionK1;
+
+  /// Radial lens distortion coefficient k2. 0 = disabled.
+  final double barrelDistortionK2;
+
+  /// Lateral chromatic aberration offset factor across lens edges. 0 = disabled.
+  final double chromaticAberrationOffset;
 
   /// Linear exposure multiplier (1.0 = unchanged).
   final double exposure;

@@ -26,10 +26,10 @@ void main() {
       expect(VrQualityPreset.low.stepDown.tier, VrQualityTier.low);
     });
 
-    test('high tier uses MSAA, lower tiers use FXAA', () {
+    test('high tier uses MSAA, medium uses FXAA, low uses none', () {
       expect(VrQualityPreset.high.antiAliasing, AntiAliasingMode.msaa);
       expect(VrQualityPreset.medium.antiAliasing, AntiAliasingMode.fxaa);
-      expect(VrQualityPreset.low.antiAliasing, AntiAliasingMode.fxaa);
+      expect(VrQualityPreset.low.antiAliasing, AntiAliasingMode.none);
     });
   });
 }

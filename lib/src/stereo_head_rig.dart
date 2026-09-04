@@ -44,6 +44,9 @@ class StereoHeadRig implements RotationTarget {
   vm.Vector3 get eyeCenter => cameraRig.position;
   set eyeCenter(vm.Vector3 value) => cameraRig.position = value;
 
+  /// World-space head orientation quaternion.
+  vm.Quaternion get orientation => cameraRig.headTransform.rotation;
+
   /// World-space gaze direction (−Z head axis, rotated).
   vm.Vector3 get forward => cameraRig.headTransform.forward;
 
