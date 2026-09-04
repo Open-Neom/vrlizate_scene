@@ -161,7 +161,7 @@ class VrLook {
       s.fogDensity = Fog.visibilityDensity(fogVisibilityMeters);
     }
 
-    final ao = ambientOcclusion && preset.tier == VrQualityTier.high;
+    final ao = ambientOcclusion && preset.tier.index >= VrQualityTier.high.index;
     s.ambientOcclusionEnabled = ao;
     if (ao) {
       s.ambientOcclusionIntensity = 0.6;

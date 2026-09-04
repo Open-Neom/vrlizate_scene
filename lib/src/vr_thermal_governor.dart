@@ -131,8 +131,9 @@ class VrThermalGovernor {
           }
         }
       } else {
-        // Nominal steady state
+        // Nominal steady state (neutral FPS band)
         _consecutiveLowCycles = 0;
+        _stableHighTimeSeconds = 0.0;
       }
     }
 

@@ -216,6 +216,20 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   _HolographicHandRig? _handRig;
 
   @override
+  void didUpdateWidget(covariant StereoSceneView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.quality != oldWidget.quality && widget.quality != null) {
+      _applyPreset(widget.quality!);
+    }
+    if (widget.ipd != oldWidget.ipd && widget.ipd != null) {
+      _rig.ipd = widget.ipd!;
+    }
+    if (widget.look != oldWidget.look && widget.look != null) {
+      widget.look!.applyToScene(widget.scene, _preset ?? VrQualityPreset.medium);
+    }
+  }
+
+  @override
   void dispose() {
     _handRig?.dispose();
     _tapDetector?.dispose();

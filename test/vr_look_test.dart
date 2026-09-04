@@ -28,7 +28,7 @@ void main() {
       expect(s.bloomEnabled, isTrue);
     });
 
-    test('ambient occlusion only runs on the high tier', () {
+    test('ambient occlusion runs on high and ultra tiers, disabled on lower tiers', () {
       final s = EnvironmentSettings();
       VrLook.cinematic.applyTo(s, VrQualityPreset.medium);
       expect(s.ambientOcclusionEnabled, isFalse);
@@ -36,6 +36,9 @@ void main() {
       VrLook.cinematic.applyTo(s, VrQualityPreset.high);
       expect(s.ambientOcclusionEnabled, isTrue);
       expect(s.ambientOcclusionHalfResolution, isTrue);
+
+      VrLook.cinematic.applyTo(s, VrQualityPreset.ultra);
+      expect(s.ambientOcclusionEnabled, isTrue);
     });
 
     test('cinematic enables grading, vignette and stronger bloom', () {
