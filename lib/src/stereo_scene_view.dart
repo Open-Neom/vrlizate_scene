@@ -46,7 +46,15 @@ class StereoSceneView extends StatefulWidget {
     this.onQualityChanged,
     this.onTick,
     this.look,
+    this.convergenceDistance = 1.8,
   });
+
+  /// Distance in meters at which the optical stereo axes converge (default 1.8m).
+  ///
+  /// Setting a finite distance eliminates diplopia (double vision) for interactive UI
+  /// elements and objects placed at comfort distance. If set to null or <= 0,
+  /// parallel cameras (infinity focus) are used.
+  final double? convergenceDistance;
 
   /// Interpupillary distance in meters (defaults to 0.064m / 64mm).
   final double? ipd;
@@ -128,6 +136,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   late final StereoHeadRig _rig = widget.rig ??
       StereoHeadRig(
         ipd: widget.ipd ?? CameraRig.defaultIpd,
+        convergenceDistance: widget.convergenceDistance,
       );
   late final HeadTracker _headTracker =
       widget.headTracker ?? HeadTracker(target: _rig);
@@ -223,6 +232,9 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     }
     if (widget.ipd != oldWidget.ipd && widget.ipd != null) {
       _rig.ipd = widget.ipd!;
+    }
+    if (widget.convergenceDistance != oldWidget.convergenceDistance) {
+      _rig.convergenceDistance = widget.convergenceDistance;
     }
     if (widget.look != oldWidget.look && widget.look != null) {
       widget.look!.applyToScene(widget.scene, _preset ?? VrQualityPreset.medium);
