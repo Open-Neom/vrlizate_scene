@@ -105,4 +105,12 @@ class VrQualityPreset {
         VrQualityTier.medium => low,
         VrQualityTier.low => low,
       };
+
+  /// The next tier up, for dynamic resolution recovery when performance is stable.
+  VrQualityPreset get stepUp => switch (tier) {
+        VrQualityTier.low => medium,
+        VrQualityTier.medium => high,
+        VrQualityTier.high => ultra,
+        VrQualityTier.ultra => ultra,
+      };
 }
