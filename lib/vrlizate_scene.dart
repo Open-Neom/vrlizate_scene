@@ -15,6 +15,8 @@ export 'src/stereo_scene_view.dart';
 export 'src/vr_look.dart';
 export 'src/vr_spatial_audio.dart';
 export 'src/vr_thermal_governor.dart';
+export 'package:vrlizate/vrlizate.dart'
+    show VrInputArbiter, VrInputPriority, VrInputSource, VrInputType;
 
 // 3D widgets live in their own module; re-exported here so existing
 // vrlizate_scene consumers (demos) keep working with a single import.

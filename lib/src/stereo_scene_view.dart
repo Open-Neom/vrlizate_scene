@@ -5,7 +5,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart'
-    show CameraRig, GazePointer, HeadTracker, InertialTapDetector;
+    show CameraRig, GazePointer, HeadTracker, InertialTapDetector, VrInputArbiter;
 
 import 'quality_preset.dart';
 import 'stereo_head_rig.dart';
@@ -47,7 +47,14 @@ class StereoSceneView extends StatefulWidget {
     this.onTick,
     this.look,
     this.convergenceDistance = 1.8,
+    this.arbiter,
   });
+
+  /// Optional input arbiter for unified multimodal priority & gaze suppression.
+  ///
+  /// When provided, dwell progress and auto-selection are cleanly suppressed
+  /// while higher priority inputs (e.g. 2nd phone remote, touch) are actively interacting.
+  final VrInputArbiter? arbiter;
 
   /// Distance in meters at which the optical stereo axes converge (default 1.8m).
   ///
@@ -205,9 +212,19 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       )..start();
     }
 
-    _gaze.onDwellProgress = (_, p) => _dwellProgress.value = p;
+    _gaze.onDwellProgress = (_, p) {
+      if (widget.arbiter != null && widget.arbiter!.isGazeSuppressed) {
+        if (_dwellProgress.value != 0) _dwellProgress.value = 0;
+        return;
+      }
+      _dwellProgress.value = p;
+    };
     _gaze.onGazeExit = (_) => _dwellProgress.value = 0;
     _gaze.onGazeSelect = (id) {
+      if (widget.arbiter != null && widget.arbiter!.isGazeSuppressed) {
+        _dwellProgress.value = 0;
+        return;
+      }
       _dwellProgress.value = 0;
       final node = _nodesByName[id];
       if (node != null) widget.onGazeSelect?.call(node);
