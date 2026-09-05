@@ -1,99 +1,159 @@
 # vrlizate_scene
 
-Optional [flutter_scene](https://pub.dev/packages/flutter_scene) (Flutter GPU)
-adapter for the [vrlizate](https://pub.dev/packages/vrlizate) VR engine.
+Stereoscopic [flutter_scene](https://pub.dev/packages/flutter_scene) adapter for
+the [vrlizate](https://pub.dev/packages/vrlizate) input and VR engine.
+The core remains renderer-independent; this optional package adds GPU-rendered
+PBR scenes, head orientation, gaze selection and world-space navigation.
 
-The vrlizate core is renderer-agnostic and ships its own software 3D pipeline.
-Add `vrlizate_scene` when you want **real-time GPU 3D** — glTF models, PBR
-materials with image-based lighting, shadows, post-processing — rendered
-stereoscopically with vrlizate head tracking and joystick-free gaze input.
+## Requirements and installation
 
-## Requirements
+- Dart `^3.10.0`, Flutter `>=3.44.0`, and a runtime/backend supported by
+  `flutter_scene` and Flutter GPU. The SDK constraint alone does not guarantee
+  GPU support on a device.
+- Follow the installed [flutter_scene setup instructions](https://pub.dev/packages/flutter_scene)
+  for backend and shader/data-asset configuration.
+- This release was tested locally using Flutter
+  `3.48.0-1.0.pre-371` / Dart `3.14.0-147.0.dev`. This records the tested
+  environment; it is not a claim that every listed platform has been validated.
+- The release depends on hosted `vrlizate ^1.11.0` and
+  `vrlizate_widgets ^0.3.0`. Those versions must be available before publishing
+  or resolving this package from pub.dev.
 
-- Flutter **master** channel (Flutter GPU has not shipped to stable).
-- `flutter config --enable-dart-data-assets` (scene/shader build hooks).
-- Native: any platform where Impeller runs (Android, iOS, desktop with
-  `--enable-impeller`). Web works via flutter_scene's WebGL2 backend.
+```sh
+flutter pub add vrlizate_scene
+```
 
-## Usage
+## A scene with a world-space HOME control
 
 ```dart
+import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart';
 import 'package:vrlizate_scene/vrlizate_scene.dart';
 
-final scene = Scene();
-// ...add nodes, lights, models...
-
-StereoSceneView(
-  scene: scene,
-  showAlignmentDivider: true, // Physical visor center divider with alignment ticks
-  zenithRecenter: true,       // Hands-free recentering when looking straight up (>55°)
-  doubleTapToRecenter: true,  // Double tap to realign forward heading
-  enableHaptics: true,        // Tactile micro-haptic pulses on dwell/selection
-  gazeDwellSeconds: 1.2,
-  onGazeSelect: (node) {
-    // Dwell-selected a named node — no joystick, no buttons.
-  },
-)
+Widget buildDemo(Scene scene, VoidCallback onHome) {
+  // Keep the Scene alive in the owning State; do not recreate it on each build.
+  return VrWorldNavigationScope(
+    onHome: onHome,
+    child: StereoSceneView(
+      scene: scene,
+      quality: VrQualityPreset.low,
+      enableHandTracking: false,
+      gazeDwellSeconds: 1.2,
+      onGazeSelect: (node) {
+        // Handle an application control identified by node.name.
+      },
+    ),
+  );
+}
 ```
 
-- `StereoSceneView` renders the scene as two half-screen eye views, driven by
-  the vrlizate `HeadTracker` (gyroscope) with touch-drag fallback.
-- **Dual Stereoscopic Reticles**: Rendered at 25% (left eye) and 75% (right eye)
-  screen width with animated dwell progress arcs.
-- **Visor Physical Alignment Guide**: Renders a central 3px black dividing bar
-  with top and bottom alignment ticks to center the smartphone physically in VR visors.
-- **Hands-Free Zenith Recenter**: Tilting the head up ($>55^\circ$) displays a 🎯
-  calibration target; holding gaze for 0.8s recalibrates the forward heading hands-free.
-- Center-gaze raycasting runs every frame through the vrlizate `GazePointer`
-  (adaptive dwell + grace period). Only nodes with a non-empty `Node.name`
-  are gaze-interactive.
-- **Stereoscopic Optical Convergence (1.8m Comfort Plane)**: `StereoHeadRig` targets
-  a finite convergence point at $1.8\text{m}$ (vergence-accommodation conflict comfort distance)
-  with toe-in angle $\theta \approx 1.02^\circ$, eliminating diplopia (double vision) and eye
-  strain on mid-field UI and objects.
-- **Zero-GC Input Arbiter Integration (`VrInputArbiter`)**: `StereoSceneView` respects
-  priority inputs — whenever an external joystick or physical controller is active,
-  gaze dwell progress is smoothly suppressed to prevent accidental selections.
-- `StereoHeadRig` wraps a vrlizate `CameraRig` and exposes per-eye
-  `PerspectiveCamera`s, individual `leftGazeRay`/`rightGazeRay`, and `buildStereoViews()` if you want
-  to drive `SceneView` manually.
+`VrWorldNavigationScope` supplies a navigation callback to nested
+`StereoSceneView` widgets. The view places one 3D HOME button near the initial
+view direction. Its position remains fixed in world coordinates; head motion
+does not drag it around the screen. The host owns navigation and decides
+whether HOME pops a route or opens its home scene.
 
-## Adaptive Quality
+`VrWorldPose`, `VrWorldAction` and `VrWorldActionPanel3D` are re-exported from
+`vrlizate_widgets` for world-space confirmation panels. Create their pose once
+when opening a panel, add/remove their nodes with the panel lifecycle, and route
+gaze or controller selection to the panel. Use `StereoSceneView.gazeFilter`
+while a modal is open so background content cannot take its focus. These are
+scene objects; a Flutter `showDialog` overlay is not made world-space by this
+package.
 
-`StereoSceneView` takes a `VrQualityPreset` (or auto-detects one from the
-display when omitted) and scales resolution (`pixelRatioScale`),
-anti-aliasing, and bloom per device tier:
+## Stereo optics and input
 
-| Tier | Detection | Resolution | AA | Bloom |
-|---|---|---|---|---|
-| low | Low DPR or budget panels (Moto G20) | 0.75× | None | off |
-| medium | Mid-range (60 Hz high DPR / 90 Hz med DPR) | 0.90× | FXAA | off |
-| high | True Flagship (≥90 Hz & DPR ≥ 2.7, S25 Ultra) | 1.00× | MSAA | on |
+- Both eye cameras remain parallel. An asymmetric, off-axis projection sets
+  the zero-parallax plane at `convergenceDistance` (default 1.8 m), avoiding
+  toe-in vertical disparity. Null, non-positive or non-finite distances disable
+  the convergence shift.
+- `stereoImageInset` independently shifts the eye images and reticles inward.
+  IPD controls the stereo baseline; it is not a replacement for physical lens
+  alignment. Viewing comfort still requires appropriate headset calibration.
+- `StereoHeadRig.screenRight` matches the renderer's horizontal screen axis;
+  legacy `right` remains the underlying rig's local +X axis. The physical
+  left/right baseline uses the screen axis so depth is not inverted.
+- Per-eye gaze rays agree with the inset-adjusted reticles. Head tracking
+  provides orientation with touch-drag fallback; this adapter does not supply
+  measured 6DoF head position.
+- Pass a `VrInputArbiter` to `arbiter` to suppress automatic dwell while a
+  higher-priority control is active. Dwell restarts after hysteresis even when
+  the gaze remains on the same target; hover and explicit taps remain available.
+- Only named, raycastable nodes can become gaze targets. Mark decorative
+  geometry `raycastable = false` to avoid blocking useful controls.
+- The legacy `enableHandTracking` option renders **simulated decorative hands**.
+  It does not start a camera or consume measured hand landmarks. Set it to
+  `false` when those visuals are not needed. Their meshes do not intercept gaze.
 
-With `dynamicScaling: true` (default) frame times are monitored after a
-warmup; if the rolling average exceeds the ~55 FPS budget within 1.2s, quality steps
-down one tier automatically. Apps should size shadow-casting lights with
-`preset.shadowMapResolution` (read it from `StereoSceneView`'s
-`effectivePreset` or via `onQualityChanged`).
+## Quality and measured limits
 
-## Roadmap: integration into vrlizate
+| Preset | Resolution multiplier | Requested AA | Bloom |
+|---|---:|---|---|
+| low | 0.75× | none | off |
+| medium | 0.90× | FXAA | off |
+| high | 1.00× | MSAA | on |
+| ultra | 1.15× | MSAA | on |
 
-This package is **private on purpose** and will not be published to pub.dev.
-It exists as a separate package only because Flutter GPU (and therefore
-flutter_scene) has not shipped on the Flutter **stable** channel — a hard
-dependency would break `pub get` on stable and collapse vrlizate's pub.dev
-score. Once Flutter GPU reaches stable, `vrlizate_scene` is expected to be
-integrated directly into the `vrlizate` package (e.g.
-`package:vrlizate/gpu.dart`), giving its software 3D engine a hardware GPU
-backend — real-time PBR, glTF, shadows and post-processing — while keeping
-the pure-Dart renderer as fallback.
+Resolution scales both dimensions relative to device pixels. Backend support
+can change the effective AA technique. Automatic tier detection uses display
+density/refresh heuristics, not a GPU benchmark.
 
-The same is expected of **[Fluorite](https://fluorite.game)**, Toyota
-Connected's open-source, console-grade 3D game and UI engine for Dart &
-Flutter (unveiled February 2026): when it is released as a package, it is
-expected to contribute substantially to vrlizate as another high-end
-rendering/engine option for VR experiences.
+With `dynamicScaling: true`, an animation-tick interval monitor steps down
+after a warmup and sustained intervals above its 18 ms budget. Its 30-frame
+warmup and 45-frame evaluation window take longer on slow devices. It does not
+measure GPU completion, promise 60 FPS, or increase quality automatically.
+Use `onQualityChanged` to observe the effective preset; avoid running competing
+quality controllers. The separately exported `VrThermalGovernor` estimates
+performance from frame intervals and does not read hardware temperature.
+
+The stereo adapter currently returns a custom `CameraProjection`.
+In the tested `flutter_scene 0.22.2`, directional shadows, SSAO and SSR are
+gated on `PerspectiveProjection` and therefore do **not** run through this
+adapter. Material PBR/IBL and supported color post-processing still apply.
+Do not interpret raycasting for interaction as rendering ray tracing.
+Exposed lens-distortion coefficients in `VrLook` are not yet applied.
+
+A profile-mode run of the companion app on a Motorola edge 20 lite / OpenGL ES
+showed a sustained raster-thread median around 120 ms in its populated Home.
+That is not acceptable interactive VR performance and is not a benchmark of
+every scene or device. Raster-thread duration is not GPU completion time.
+Profile representative content on target phones before choosing a quality tier;
+unit tests validate logic and geometry, not a frame-rate guarantee.
+
+## Development
+
+The repository's `pubspec_overrides.yaml` uses sibling checkouts of
+`../vrlizate` and `../vrlizate_widgets` for coordinated development. It is
+excluded from the published archive. Consumers resolve hosted dependencies.
+
+```sh
+flutter pub get
+flutter test
+flutter analyze
+flutter pub publish --dry-run
+```
+
+Tests cover physical disparity signs, convergence, rotated panel corners,
+reticle/ray consistency, world navigation, gaze suppression and simulated-hand
+picking/allocation behavior. GPU runtime verification is a separate step; use
+`flutter run --profile` in a host application.
+
+## Español
+
+Adaptador opcional para escenas VR estéreo: incluye proyección off-axis,
+selección por mirada y controles HOME/modales anclados al mundo 3D. El padre
+de la escena define la navegación; los controles conservan su posición al
+mover la cabeza.
+
+Las manos decorativas son simuladas, el seguimiento de cabeza es de orientación,
+y la calidad adaptativa no garantiza 60 FPS. En el backend probado, sombras,
+SSAO y SSR no se activan con la proyección del adaptador. Los coeficientes de
+distorsión óptica expuestos todavía no se aplican. Prueba el rendimiento en
+modo profile y calibra el visor físico antes de evaluar la experiencia.
+
+Para contribuir, utiliza los módulos hermanos indicados en
+`pubspec_overrides.yaml`, ejecuta `flutter test` y `flutter analyze`, y conserva
+pruebas de las interacciones y de la proyección cuando cambies estos sistemas.
 
 ## License
 

@@ -12,6 +12,7 @@ void main() {
       final right = rig.eyePosition(StereoEye.right);
       expect((right - left).length, closeTo(0.064, 1e-6));
       expect((left + right) / 2, vm.Vector3(0, 1.6, 0));
+      expect((right - left).dot(rig.screenRight), closeTo(0.064, 1e-6));
     });
 
     test('gaze ray starts at eye center and points forward', () {

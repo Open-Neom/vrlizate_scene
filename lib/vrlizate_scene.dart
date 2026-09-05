@@ -2,11 +2,11 @@
 /// VR engine.
 ///
 /// Optional module: the vrlizate core stays renderer-agnostic. Add this
-/// package when you want real-time PBR 3D scenes (glTF, shadows, IBL)
+/// package when you want PBR 3D scenes (glTF and image-based lighting)
 /// rendered stereoscopically with vrlizate head tracking and gaze input.
 ///
-/// Requires Flutter master channel (Flutter GPU) and
-/// `flutter config --enable-dart-data-assets`.
+/// Requires a Flutter GPU / flutter_scene compatible runtime. See the package
+/// README for platform setup, profiling guidance, and rendering limitations.
 library;
 
 export 'src/quality_preset.dart';
@@ -15,6 +15,7 @@ export 'src/stereo_scene_view.dart';
 export 'src/vr_look.dart';
 export 'src/vr_spatial_audio.dart';
 export 'src/vr_thermal_governor.dart';
+export 'src/vr_world_navigation_scope.dart';
 export 'package:vrlizate/vrlizate.dart'
     show
         VrInputArbiter,
@@ -44,5 +45,14 @@ export 'package:vrlizate_widgets/vrlizate_widgets.dart'
         VrSpatial,
         VrDragController,
         VrSlider3D,
+        VrSegmentedControl3D,
+        VrProgressBar3D,
+        VrStepper3D,
+        VrTextBitmap,
+        VrTextRaster,
+        VrTextLabel,
+        VrWorldPose,
+        VrWorldAction,
+        VrWorldActionPanel3D,
         controlMaterial,
         VrControlMeshBuilder;

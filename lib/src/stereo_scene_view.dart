@@ -5,11 +5,20 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart'
-    show CameraRig, GazePointer, HeadTracker, InertialTapDetector, VrInputArbiter;
+    show
+        CameraRig,
+        GazePointer,
+        HeadTracker,
+        InertialTapDetector,
+        VrInputArbiter;
+import 'package:vrlizate_widgets/vrlizate_widgets.dart'
+    show VrButton3D, VrTextLabel;
 
 import 'quality_preset.dart';
+import 'simulated_hand_visuals.dart';
 import 'stereo_head_rig.dart';
 import 'vr_look.dart';
+import 'vr_world_navigation_scope.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
 /// vrlizate input stack.
@@ -28,6 +37,7 @@ class StereoSceneView extends StatefulWidget {
     this.rig,
     this.headTracker,
     this.ipd,
+    this.stereoImageInset,
     this.touchFallback = true,
     this.doubleTapToRecenter = true,
     this.zenithRecenter = true,
@@ -40,6 +50,7 @@ class StereoSceneView extends StatefulWidget {
     this.gazeDwellSeconds = 2.0,
     this.onGazeSelect,
     this.onGazeHoverChanged,
+    this.gazeFilter,
     this.showReticle = true,
     this.quality,
     this.dynamicScaling = true,
@@ -56,15 +67,19 @@ class StereoSceneView extends StatefulWidget {
   /// while higher priority inputs (e.g. 2nd phone remote, touch) are actively interacting.
   final VrInputArbiter? arbiter;
 
-  /// Distance in meters at which the optical stereo axes converge (default 1.8m).
+  /// Zero-parallax distance in meters before optical image inset (default 1.8m).
   ///
-  /// Setting a finite distance eliminates diplopia (double vision) for interactive UI
-  /// elements and objects placed at comfort distance. If set to null or <= 0,
-  /// parallel cameras (infinity focus) are used.
+  /// An off-axis projection keeps the cameras parallel and aligns the views
+  /// at this depth. Null or non-positive values disable the convergence shift.
+  /// Physical lens calibration remains necessary for viewing comfort.
   final double? convergenceDistance;
 
   /// Interpupillary distance in meters (defaults to 0.064m / 64mm).
   final double? ipd;
+
+  /// Optical image-center correction. Positive values move both eye images
+  /// inward without changing the virtual cameras' anatomical IPD.
+  final double? stereoImageInset;
 
   /// Whether double-tapping on screen recenters the horizontal gaze heading.
   final bool doubleTapToRecenter;
@@ -75,7 +90,10 @@ class StereoSceneView extends StatefulWidget {
   /// Whether physical tap on visor/temple triggers instant gaze select and double-tap recenters.
   final bool enableTempleTap;
 
-  /// Whether to render and track 3D holographic hands in the stereoscopic scene.
+  /// Whether to render decorative, head-relative holographic hands.
+  ///
+  /// This legacy option displays a simulated idle pose; it does not enable
+  /// optical hand tracking or consume measured hand landmarks.
   final bool enableHandTracking;
 
   /// Color accent for the 3D holographic hands glowing energy joints.
@@ -112,6 +130,13 @@ class StereoSceneView extends StatefulWidget {
   /// Called when the gazed node changes (null when gaze leaves all nodes).
   final void Function(Node? node)? onGazeHoverChanged;
 
+  /// Optional scene-node filter used by gaze raycasting.
+  ///
+  /// A world-space modal can restrict gaze to its own controls while open,
+  /// preventing scenery from stealing the reticle without making the modal
+  /// follow the user's head.
+  final bool Function(Node node)? gazeFilter;
+
   /// Whether to draw the center reticle with dwell progress.
   final bool showReticle;
 
@@ -140,7 +165,8 @@ class StereoSceneView extends StatefulWidget {
 }
 
 class _StereoSceneViewState extends State<StereoSceneView> {
-  late final StereoHeadRig _rig = widget.rig ??
+  late final StereoHeadRig _rig =
+      widget.rig ??
       StereoHeadRig(
         ipd: widget.ipd ?? CameraRig.defaultIpd,
         convergenceDistance: widget.convergenceDistance,
@@ -161,6 +187,14 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   InertialTapDetector? _tapDetector;
   VrQualityPreset? _preset;
+  VrWorldNavigationScope? _worldNavigation;
+  VrButton3D? _worldHomeButton;
+  vm.Vector3? _worldHomeCenter;
+  List<Node> _worldHomeNodes = const [];
+  bool _worldHomeCreating = false;
+  int _worldHomeGeneration = 0;
+
+  static const String _worldHomeNodeName = '__vrlizate_system_home__';
 
   /// The quality preset currently in effect.
   VrQualityPreset? get effectivePreset => _preset;
@@ -189,6 +223,9 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     if (widget.ipd != null) {
       _rig.ipd = widget.ipd!;
     }
+    if (widget.stereoImageInset != null) {
+      _rig.stereoImageInset = widget.stereoImageInset!;
+    }
     _headTracker.start();
 
     // Zero-latency temple/visor tap trigger
@@ -199,7 +236,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
           if (currentId != null) {
             final node = _nodesByName[currentId];
             if (node != null) {
-              widget.onGazeSelect?.call(node);
+              _activateGazeNode(node);
               if (widget.enableHaptics) HapticFeedback.selectionClick();
             }
           }
@@ -219,7 +256,14 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       }
       _dwellProgress.value = p;
     };
-    _gaze.onGazeExit = (_) => _dwellProgress.value = 0;
+    _gaze.onGazeExit = (id) {
+      _dwellProgress.value = 0;
+      if (id == _worldHomeNodeName) {
+        _worldHomeButton?.onHoverExit(id);
+      } else if (widget.gazeEnabled) {
+        widget.onGazeHoverChanged?.call(null);
+      }
+    };
     _gaze.onGazeSelect = (id) {
       if (widget.arbiter != null && widget.arbiter!.isGazeSuppressed) {
         _dwellProgress.value = 0;
@@ -227,19 +271,34 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       }
       _dwellProgress.value = 0;
       final node = _nodesByName[id];
-      if (node != null) widget.onGazeSelect?.call(node);
+      if (node != null) _activateGazeNode(node);
     };
     _gaze.onGazeEnter = (id) {
       final node = _nodesByName[id];
-      widget.onGazeHoverChanged?.call(node);
+      if (id == _worldHomeNodeName) {
+        _worldHomeButton?.onHoverEnter(id);
+      } else if (widget.gazeEnabled) {
+        widget.onGazeHoverChanged?.call(node);
+      }
     };
 
     if (widget.enableHandTracking) {
-      _handRig = _HolographicHandRig(widget.scene, widget.handGlowColor);
+      _handRig = SimulatedHandVisuals(widget.scene.root, widget.handGlowColor);
     }
   }
 
-  _HolographicHandRig? _handRig;
+  SimulatedHandVisuals? _handRig;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = VrWorldNavigationScope.maybeOf(context);
+    if (next?.onHome != _worldNavigation?.onHome ||
+        next?.homeLabel != _worldNavigation?.homeLabel) {
+      _removeWorldHome();
+      _worldNavigation = next;
+    }
+  }
 
   @override
   void didUpdateWidget(covariant StereoSceneView oldWidget) {
@@ -250,16 +309,24 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     if (widget.ipd != oldWidget.ipd && widget.ipd != null) {
       _rig.ipd = widget.ipd!;
     }
+    if (widget.stereoImageInset != oldWidget.stereoImageInset &&
+        widget.stereoImageInset != null) {
+      _rig.stereoImageInset = widget.stereoImageInset!;
+    }
     if (widget.convergenceDistance != oldWidget.convergenceDistance) {
       _rig.convergenceDistance = widget.convergenceDistance;
     }
     if (widget.look != oldWidget.look && widget.look != null) {
-      widget.look!.applyToScene(widget.scene, _preset ?? VrQualityPreset.medium);
+      widget.look!.applyToScene(
+        widget.scene,
+        _preset ?? VrQualityPreset.medium,
+      );
     }
   }
 
   @override
   void dispose() {
+    _removeWorldHome();
     _handRig?.dispose();
     _tapDetector?.dispose();
     if (widget.headTracker == null) _headTracker.stop();
@@ -272,6 +339,13 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     _monitorFrameTime(dt);
 
     final t = elapsed.inMicroseconds / 1000000.0;
+    if (t > 0.20 &&
+        _worldNavigation != null &&
+        _worldHomeButton == null &&
+        !_worldHomeCreating) {
+      _createWorldHome();
+    }
+    _worldHomeButton?.update(dt);
     if (_handRig != null) {
       _handRig!.update(_rig.eyeCenter, _rig.cameraRig.rotation, t);
     }
@@ -296,17 +370,127 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       }
     }
 
-    if (widget.gazeEnabled) {
-      final hit = widget.scene.raycast(_rig.gazeRay);
+    final systemGazeEnabled = _worldNavigation != null;
+    if (widget.gazeEnabled || systemGazeEnabled) {
+      final homeCenter = _worldHomeCenter;
+      var aimingAtHome = false;
+      if (systemGazeEnabled && homeCenter != null) {
+        final toHome = homeCenter - _rig.eyeCenter;
+        if (toHome.length2 > 0.0001) {
+          toHome.normalize();
+          // Cheap angular broad phase: preserve one raycast per frame on
+          // low-end devices, and only grant system priority near HOME.
+          aimingAtHome = toHome.dot(_rig.forward) > 0.96;
+        }
+      }
+      final systemHit = aimingAtHome
+          ? widget.scene.raycast(
+              _rig.gazeRay,
+              where: (node) => node.name == _worldHomeNodeName,
+            )
+          : null;
+      final hit =
+          systemHit ??
+          (widget.gazeEnabled
+              ? widget.scene.raycast(
+                  _rig.gazeRay,
+                  where: (node) =>
+                      node.name != _worldHomeNodeName &&
+                      (widget.gazeFilter?.call(node) ?? true),
+                )
+              : null);
       final node = hit?.node;
       String? id;
       if (node != null && node.name.isNotEmpty) {
         id = node.name;
         _nodesByName[id] = node;
       }
-      _gaze.update(dt, id);
+      _gaze.update(
+        dt,
+        id,
+        dwellEnabled: !(widget.arbiter?.isGazeSuppressed ?? false),
+      );
     }
     widget.onTick?.call(elapsed, dt);
+  }
+
+  void _activateGazeNode(Node node) {
+    if (node.name == _worldHomeNodeName) {
+      _worldHomeButton?.onSelect(_worldHomeNodeName);
+      return;
+    }
+    if (widget.gazeEnabled) widget.onGazeSelect?.call(node);
+  }
+
+  Future<void> _createWorldHome() async {
+    final navigation = _worldNavigation;
+    if (navigation == null || _worldHomeCreating || !mounted) return;
+    _worldHomeCreating = true;
+    final generation = ++_worldHomeGeneration;
+    try {
+      final button = VrButton3D(
+        name: _worldHomeNodeName,
+        label: 'Volver al Home',
+        center: vm.Vector3.zero(),
+        color: vm.Vector4(0.02, 0.70, 0.88, 1),
+        width: 0.52,
+        height: 0.18,
+        onPressed: navigation.onHome,
+      );
+      final label = await VrTextLabel.create(
+        navigation.homeLabel,
+        center: vm.Vector3.zero(),
+        height: 0.062,
+        fontSize: 80,
+        color: Colors.white,
+        fontWeight: FontWeight.w800,
+        maxWidthPx: 700,
+        name: _worldHomeNodeName,
+      );
+      if (!mounted ||
+          generation != _worldHomeGeneration ||
+          _worldNavigation == null) {
+        return;
+      }
+
+      final distance = _rig.convergenceDistance ?? 1.8;
+      final center =
+          _rig.eyeCenter +
+          _rig.forward * distance +
+          _rig.right * 0.62 +
+          _rig.up * 0.42;
+      final pose = _WorldLockedBasis.facing(
+        eye: _rig.eyeCenter,
+        center: center,
+      );
+      button.nodes.first.localTransform = pose.transformAt(0, 0, 0);
+      label.node.localTransform = pose.transformAt(0, 0, 0.04)
+        ..rotateX(pi / 2)
+        ..scaleByVector3(vm.Vector3(-1, 1, 1));
+
+      _worldHomeButton = button;
+      _worldHomeCenter = center.clone();
+      _worldHomeNodes = [...button.nodes, label.node];
+      for (final node in _worldHomeNodes) {
+        widget.scene.add(node);
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Could not create world HOME control: $error\n$stackTrace');
+    } finally {
+      _worldHomeCreating = false;
+    }
+  }
+
+  void _removeWorldHome() {
+    _worldHomeGeneration++;
+    for (final node in _worldHomeNodes) {
+      if (node.parent != null) widget.scene.remove(node);
+    }
+    _worldHomeNodes = const [];
+    _worldHomeButton = null;
+    _worldHomeCenter = null;
+    _worldHomeCreating = false;
+    _nodesByName.remove(_worldHomeNodeName);
   }
 
   /// Rolling frame-time monitor: after a warmup, if the average frame time
@@ -329,8 +513,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   @override
   Widget build(BuildContext context) {
-    final preset =
-        _preset ?? VrQualityPreset.resolve(context, widget.quality);
+    final preset = _preset ?? VrQualityPreset.resolve(context, widget.quality);
     if (_preset == null) _applyPreset(preset);
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
@@ -360,7 +543,8 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       );
     }
 
-    if ((widget.showReticle && widget.gazeEnabled) ||
+    final effectiveGaze = widget.gazeEnabled || _worldNavigation != null;
+    if ((widget.showReticle && effectiveGaze) ||
         widget.showAlignmentDivider ||
         widget.zenithRecenter) {
       child = Stack(
@@ -373,7 +557,8 @@ class _StereoSceneViewState extends State<StereoSceneView> {
                 progress: _dwellProgress,
                 zenithProgress: _zenithProgress,
                 showDivider: widget.showAlignmentDivider,
-                showReticle: widget.showReticle && widget.gazeEnabled,
+                showReticle: widget.showReticle && effectiveGaze,
+                stereoImageInset: _rig.stereoImageInset,
               ),
             ),
           ),
@@ -385,6 +570,49 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   }
 }
 
+/// Immutable basis captured once for a system control in world space.
+class _WorldLockedBasis {
+  const _WorldLockedBasis({
+    required this.center,
+    required this.right,
+    required this.up,
+    required this.normal,
+  });
+
+  final vm.Vector3 center;
+  final vm.Vector3 right;
+  final vm.Vector3 up;
+  final vm.Vector3 normal;
+
+  factory _WorldLockedBasis.facing({
+    required vm.Vector3 eye,
+    required vm.Vector3 center,
+  }) {
+    final normal = eye - center;
+    if (normal.length2 < 0.0001) normal.setValues(0, 0, 1);
+    normal.normalize();
+    final right = vm.Vector3(0, 1, 0).cross(normal);
+    if (right.length2 < 0.0001) right.setValues(1, 0, 0);
+    right.normalize();
+    final up = normal.cross(right)..normalize();
+    return _WorldLockedBasis(
+      center: center.clone(),
+      right: right,
+      up: up,
+      normal: normal,
+    );
+  }
+
+  vm.Matrix4 transformAt(double x, double y, double z) {
+    final origin = center + right * x + up * y + normal * z;
+    return vm.Matrix4.identity()
+      ..setColumn(0, vm.Vector4(right.x, right.y, right.z, 0))
+      ..setColumn(1, vm.Vector4(up.x, up.y, up.z, 0))
+      ..setColumn(2, vm.Vector4(normal.x, normal.y, normal.z, 0))
+      ..setColumn(3, vm.Vector4(origin.x, origin.y, origin.z, 1));
+  }
+}
+
 /// Center gaze reticles for both stereoscopic eyes with a dwell-progress arc,
 /// physical alignment divider, and zenith calibration target.
 class _ReticlePainter extends CustomPainter {
@@ -393,14 +621,23 @@ class _ReticlePainter extends CustomPainter {
     required this.zenithProgress,
     this.showDivider = true,
     this.showReticle = true,
+    required this.stereoImageInset,
   }) : super(repaint: Listenable.merge([progress, zenithProgress]));
 
   final ValueNotifier<double> progress;
   final ValueNotifier<double> zenithProgress;
   final bool showDivider;
   final bool showReticle;
+  final double stereoImageInset;
 
-  void _drawReticle(Canvas canvas, Offset center, double p, Paint ring, Paint dot, Paint arc) {
+  void _drawReticle(
+    Canvas canvas,
+    Offset center,
+    double p,
+    Paint ring,
+    Paint dot,
+    Paint arc,
+  ) {
     canvas.drawCircle(center, 9, ring);
     canvas.drawCircle(center, 2.5, dot);
     if (p > 0) {
@@ -457,11 +694,7 @@ class _ReticlePainter extends CustomPainter {
       final tickPaint = Paint()
         ..color = const Color(0xFF00E5FF).withValues(alpha: 0.4)
         ..strokeWidth = 2;
-      canvas.drawLine(
-        Offset(dividerX, 0),
-        Offset(dividerX, 16),
-        tickPaint,
-      );
+      canvas.drawLine(Offset(dividerX, 0), Offset(dividerX, 16), tickPaint);
       canvas.drawLine(
         Offset(dividerX, size.height - 16),
         Offset(dividerX, size.height),
@@ -471,8 +704,15 @@ class _ReticlePainter extends CustomPainter {
 
     // 2. Stereoscopic Gaze Reticles
     if (showReticle) {
-      final leftCenter = Offset(size.width * 0.25, size.height * 0.5);
-      final rightCenter = Offset(size.width * 0.75, size.height * 0.5);
+      final insetPixels = size.width * 0.25 * stereoImageInset;
+      final leftCenter = Offset(
+        size.width * 0.25 + insetPixels,
+        size.height * 0.5,
+      );
+      final rightCenter = Offset(
+        size.width * 0.75 - insetPixels,
+        size.height * 0.5,
+      );
       final ring = Paint()
         ..color = Colors.white.withValues(alpha: 0.7)
         ..style = PaintingStyle.stroke
@@ -492,8 +732,15 @@ class _ReticlePainter extends CustomPainter {
     // 3. Hands-Free Zenith Recenter Target (when looking straight up)
     final zp = zenithProgress.value;
     if (zp > 0) {
-      final leftZenith = Offset(size.width * 0.25, size.height * 0.18);
-      final rightZenith = Offset(size.width * 0.75, size.height * 0.18);
+      final insetPixels = size.width * 0.25 * stereoImageInset;
+      final leftZenith = Offset(
+        size.width * 0.25 + insetPixels,
+        size.height * 0.18,
+      );
+      final rightZenith = Offset(
+        size.width * 0.75 - insetPixels,
+        size.height * 0.18,
+      );
       _drawZenithTarget(canvas, leftZenith, zp);
       _drawZenithTarget(canvas, rightZenith, zp);
     }
@@ -502,159 +749,3 @@ class _ReticlePainter extends CustomPainter {
   @override
   bool shouldRepaint(_ReticlePainter oldDelegate) => true;
 }
-
-/// Lightweight 3D dual holographic hands rig rendered inside a stereoscopic [Scene].
-class _HolographicHandRig {
-  final Scene scene;
-  final Color glowColor;
-
-  Node? rightPalmNode;
-  final List<Node> rightFingerNodes = [];
-  Node? rightTipNode;
-
-  Node? leftPalmNode;
-  final List<Node> leftFingerNodes = [];
-  Node? leftTipNode;
-
-  _HolographicHandRig(this.scene, this.glowColor) {
-    final col = vm.Vector4(
-      glowColor.r,
-      glowColor.g,
-      glowColor.b,
-      0.85,
-    );
-    final emissive = vm.Vector4(
-      glowColor.r,
-      glowColor.g,
-      glowColor.b,
-      1.0,
-    );
-
-    final handMat = PhysicallyBasedMaterial()
-      ..baseColorFactor = col
-      ..emissiveFactor = emissive
-      ..roughnessFactor = 0.15;
-
-    final tipMat = PhysicallyBasedMaterial()
-      ..baseColorFactor = vm.Vector4(1, 1, 1, 1)
-      ..emissiveFactor = vm.Vector4(col.x, col.y, col.z, 1.0)
-      ..roughnessFactor = 0.0;
-
-    // 1. Right Hand
-    rightPalmNode = Node(
-      name: 'holo_palm_r',
-      mesh: Mesh(CuboidGeometry(vm.Vector3(0.065, 0.018, 0.065)), handMat),
-    );
-    scene.add(rightPalmNode!);
-
-    for (int i = 0; i < 5; i++) {
-      final f = Node(
-        name: 'holo_finger_r_$i',
-        mesh: Mesh(CuboidGeometry(vm.Vector3(0.012, 0.012, 0.035)), handMat),
-      );
-      rightFingerNodes.add(f);
-      scene.add(f);
-    }
-
-    rightTipNode = Node(
-      name: 'holo_tip_r',
-      mesh: Mesh(CuboidGeometry(vm.Vector3(0.024, 0.024, 0.024)), tipMat),
-    );
-    scene.add(rightTipNode!);
-
-    // 2. Left Hand
-    leftPalmNode = Node(
-      name: 'holo_palm_l',
-      mesh: Mesh(CuboidGeometry(vm.Vector3(0.065, 0.018, 0.065)), handMat),
-    );
-    scene.add(leftPalmNode!);
-
-    for (int i = 0; i < 5; i++) {
-      final f = Node(
-        name: 'holo_finger_l_$i',
-        mesh: Mesh(CuboidGeometry(vm.Vector3(0.012, 0.012, 0.035)), handMat),
-      );
-      leftFingerNodes.add(f);
-      scene.add(f);
-    }
-
-    leftTipNode = Node(
-      name: 'holo_tip_l',
-      mesh: Mesh(CuboidGeometry(vm.Vector3(0.024, 0.024, 0.024)), tipMat),
-    );
-    scene.add(leftTipNode!);
-  }
-
-  void update(vm.Vector3 eyePos, vm.Quaternion orientation, double t) {
-    final hoverY = sin(t * 2.2) * 0.008;
-
-    // 1. Right Hand position (~17cm right, 22cm down, 46cm forward)
-    final localRightHand = vm.Vector3(0.17, -0.22 + hoverY, -0.46);
-    final worldRightHand = eyePos + orientation.rotate(localRightHand);
-
-    if (rightPalmNode != null) {
-      rightPalmNode!.localTransform = vm.Matrix4.translation(worldRightHand);
-    }
-
-    final rightOffsets = [
-      vm.Vector3(-0.028, 0.004, -0.032), // Thumb
-      vm.Vector3(-0.012, 0.007, -0.048), // Index
-      vm.Vector3(0.004, 0.007, -0.052),  // Middle
-      vm.Vector3(0.018, 0.005, -0.044),  // Ring
-      vm.Vector3(0.032, 0.003, -0.036),  // Pinky
-    ];
-
-    for (int i = 0; i < rightFingerNodes.length; i++) {
-      final flex = sin(t * 1.8 + i) * 0.003;
-      final off = orientation.rotate(rightOffsets[i] + vm.Vector3(0, flex, 0));
-      rightFingerNodes[i].localTransform = vm.Matrix4.translation(worldRightHand + off);
-    }
-
-    final rightTipOff = orientation.rotate(vm.Vector3(-0.012, 0.007, -0.048));
-    if (rightTipNode != null) {
-      rightTipNode!.localTransform = vm.Matrix4.translation(worldRightHand + rightTipOff);
-    }
-
-    // 2. Left Hand position (~17cm left, 22cm down, 46cm forward)
-    final localLeftHand = vm.Vector3(-0.17, -0.22 + hoverY, -0.46);
-    final worldLeftHand = eyePos + orientation.rotate(localLeftHand);
-
-    if (leftPalmNode != null) {
-      leftPalmNode!.localTransform = vm.Matrix4.translation(worldLeftHand);
-    }
-
-    final leftOffsets = [
-      vm.Vector3(0.028, 0.004, -0.032),  // Thumb
-      vm.Vector3(0.012, 0.007, -0.048),  // Index
-      vm.Vector3(-0.004, 0.007, -0.052), // Middle
-      vm.Vector3(-0.018, 0.005, -0.044), // Ring
-      vm.Vector3(-0.032, 0.003, -0.036), // Pinky
-    ];
-
-    for (int i = 0; i < leftFingerNodes.length; i++) {
-      final flex = sin(t * 1.8 + i + 1.5) * 0.003;
-      final off = orientation.rotate(leftOffsets[i] + vm.Vector3(0, flex, 0));
-      leftFingerNodes[i].localTransform = vm.Matrix4.translation(worldLeftHand + off);
-    }
-
-    final leftTipOff = orientation.rotate(vm.Vector3(0.012, 0.007, -0.048));
-    if (leftTipNode != null) {
-      leftTipNode!.localTransform = vm.Matrix4.translation(worldLeftHand + leftTipOff);
-    }
-  }
-
-  void dispose() {
-    if (rightPalmNode != null) scene.remove(rightPalmNode!);
-    for (final f in rightFingerNodes) {
-      scene.remove(f);
-    }
-    if (rightTipNode != null) scene.remove(rightTipNode!);
-
-    if (leftPalmNode != null) scene.remove(leftPalmNode!);
-    for (final f in leftFingerNodes) {
-      scene.remove(f);
-    }
-    if (leftTipNode != null) scene.remove(leftTipNode!);
-  }
-}
-

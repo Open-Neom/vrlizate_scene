@@ -23,7 +23,9 @@ class StereoHeadRig implements RotationTarget {
     vm.Vector3? eyeCenter,
     double ipd = 0.064,
     this.convergenceDistance = 1.8,
-  }) : cameraRig = cameraRig ?? CameraRig(ipd: ipd) {
+    double stereoImageInset = 0.10,
+  }) : _stereoImageInset = _validateStereoImageInset(stereoImageInset),
+       cameraRig = cameraRig ?? CameraRig(ipd: ipd) {
     final center = eyeCenter;
     if (center != null) this.cameraRig.position = center;
   }
@@ -31,12 +33,25 @@ class StereoHeadRig implements RotationTarget {
   /// The underlying vrlizate camera rig (position, rotation, IPD, FOV).
   final CameraRig cameraRig;
 
-  /// Distance in meters at which the left and right optical stereo axes converge.
+  /// Distance in meters of the zero-parallax plane, before image-center inset.
   ///
-  /// Setting a finite distance (e.g. 1.5m to 2.0m) eliminates diplopia (double vision)
-  /// for interactive UI elements and content placed at comfortable reaching distance.
-  /// If set to null or <= 0, cameras remain parallel (infinity focus).
+  /// Both cameras remain parallel. An asymmetric projection aligns content at
+  /// this depth without the vertical disparity introduced by toe-in cameras.
+  /// Null, non-finite, or non-positive values disable the convergence shift.
+  /// Actual viewing comfort also depends on the physical headset calibration.
   double? convergenceDistance;
+
+  /// Horizontal optical correction that moves both eye images inward.
+  ///
+  /// This is independent from anatomical IPD. `0.10` moves each image center
+  /// inward by 2.5% of the full display width, which helps long phones whose
+  /// quarter-screen centers sit wider than the headset lenses. Valid range is
+  /// 0 (no correction) through 0.35.
+  double get stereoImageInset => _stereoImageInset;
+  double _stereoImageInset;
+  set stereoImageInset(double value) {
+    _stereoImageInset = _validateStereoImageInset(value);
+  }
 
   /// Interpupillary distance in meters.
   double get ipd => cameraRig.ipd;
@@ -61,28 +76,46 @@ class StereoHeadRig implements RotationTarget {
   /// World-space gaze direction (−Z head axis, rotated).
   vm.Vector3 get forward => cameraRig.headTransform.forward;
 
-  /// World-space head-right direction.
+  /// World-space local +X direction of the underlying vrlizate rig.
+  ///
+  /// This differs from [screenRight] because flutter_scene's view convention
+  /// uses `up.cross(forward)` for its horizontal camera axis.
   vm.Vector3 get right => cameraRig.headTransform.right;
 
   /// World-space head-up direction.
   vm.Vector3 get up => cameraRig.headTransform.up;
 
-  /// World-space position of [eye].
+  /// World direction that projects toward the right edge of an eye viewport.
+  vm.Vector3 get screenRight => up.cross(forward)..normalize();
+
+  /// Physical left/right eye position in the renderer's screen basis.
+  ///
+  /// Using the rig's local +X for the baseline would swap the stereo images
+  /// relative to flutter_scene's view basis and invert perceived depth.
   vm.Vector3 eyePosition(StereoEye eye) =>
-      eyeCenter + right * ((eye == StereoEye.left ? -1.0 : 1.0) * ipd / 2);
+      eyeCenter + screenRight * _eyeOffset(eye);
 
-  /// Point in world space where the left and right gaze axes converge.
-  /// If [convergenceDistance] is finite and positive, it is [eyeCenter] + [forward] * [convergenceDistance].
-  vm.Vector3? get convergencePoint =>
-      (convergenceDistance != null && convergenceDistance! > 0)
-          ? eyeCenter + forward * convergenceDistance!
-          : null;
+  double _eyeOffset(StereoEye eye) =>
+      (eye == StereoEye.left ? -1.0 : 1.0) * ipd / 2;
 
-  /// The toe-in convergence angle in radians for each eye toward the convergence point.
-  /// Returns 0.0 if convergence is disabled.
+  double? get _finiteConvergenceDistance {
+    final distance = convergenceDistance;
+    return distance != null && distance.isFinite && distance > 0
+        ? distance
+        : null;
+  }
+
+  /// World point seen under both inset-adjusted reticles, when convergence is on.
+  vm.Vector3? get convergencePoint {
+    final distance = _finiteConvergenceDistance;
+    return distance == null ? null : eyeCenter + forward * distance;
+  }
+
+  /// Gaze-ray angle per eye toward the convergence point, in radians.
+  /// The cameras themselves remain parallel. Returns zero when disabled.
   double get convergenceAngleRadians {
-    final dist = convergenceDistance;
-    if (dist == null || dist <= 0) return 0.0;
+    final dist = _finiteConvergenceDistance;
+    if (dist == null) return 0.0;
     return atan2(ipd / 2, dist);
   }
 
@@ -90,14 +123,13 @@ class StereoHeadRig implements RotationTarget {
   ///
   /// Positive value indicates uncrossed parallax (farther than convergence plane).
   /// Negative value indicates crossed parallax (closer than convergence plane).
-  /// Zero indicates zero parallax (exactly on the convergence plane).
+  /// Zero indicates zero parallax (exactly on the convergence plane). This
+  /// angular convention is the opposite sign of left-minus-right screen pixels.
   double parallaxAtDistance(double distanceMeters) {
     if (distanceMeters <= 0) return 0.0;
-    final dist = convergenceDistance;
-    if (dist == null || dist <= 0) {
-      return atan2(ipd, distanceMeters);
-    }
-    return atan2(ipd, dist) - atan2(ipd, distanceMeters);
+    final dist = _finiteConvergenceDistance;
+    final convergenceAngle = dist == null ? 0.0 : atan2(ipd / 2, dist);
+    return 2 * (convergenceAngle - atan2(ipd / 2, distanceMeters));
   }
 
   /// Gaze ray from the eye midpoint along [forward], for center-screen
@@ -125,17 +157,23 @@ class StereoHeadRig implements RotationTarget {
 
   /// Builds the flutter_scene [PerspectiveCamera] for [eye].
   ///
-  /// If [convergenceDistance] is set, the camera looks at [convergencePoint],
-  /// creating a stereoscopic convergence plane at that depth. Otherwise,
-  /// it looks parallel along [forward].
+  /// Cameras always look parallel along [forward]. When convergence is enabled,
+  /// an off-axis projection puts [convergencePoint] under the inset-adjusted
+  /// reticle while preserving identical vertical projections for both eyes.
   PerspectiveCamera eyeCamera(StereoEye eye, {double? fovRadiansY}) {
     final pos = eyePosition(eye);
-    final target = convergencePoint ?? (pos + forward);
-    return PerspectiveCamera(
+    final distance = _finiteConvergenceDistance;
+    return _ShiftedPerspectiveCamera(
       position: pos,
-      target: target,
+      target: pos + forward,
       up: up,
       fovRadiansY: fovRadiansY ?? cameraRig.fovY,
+      horizontalShift: eye == StereoEye.left
+          ? _stereoImageInset
+          : -_stereoImageInset,
+      eyeOffsetOverConvergence: distance == null
+          ? 0
+          : _eyeOffset(eye) / distance,
     );
   }
 
@@ -156,4 +194,70 @@ class StereoHeadRig implements RotationTarget {
 
   /// Default vertical FOV for Cardboard-class viewers (60°).
   static double get defaultFovY => 60 * pi / 180;
+
+  static double _validateStereoImageInset(double value) {
+    if (!value.isFinite || value < 0 || value > 0.35) {
+      throw ArgumentError.value(
+        value,
+        'stereoImageInset',
+        'Must be finite and between 0 and 0.35.',
+      );
+    }
+    return value;
+  }
+}
+
+final class _ShiftedPerspectiveCamera extends PerspectiveCamera {
+  _ShiftedPerspectiveCamera({
+    required super.position,
+    required super.target,
+    required super.up,
+    required super.fovRadiansY,
+    required this.horizontalShift,
+    required this.eyeOffsetOverConvergence,
+  });
+
+  final double horizontalShift;
+  final double eyeOffsetOverConvergence;
+
+  @override
+  CameraProjection get projection => _ShiftedPerspectiveProjection(
+    fovRadiansY: fovRadiansY,
+    near: fovNear,
+    far: fovFar,
+    horizontalShift: horizontalShift,
+    eyeOffsetOverConvergence: eyeOffsetOverConvergence,
+  );
+}
+
+final class _ShiftedPerspectiveProjection extends CameraProjection {
+  _ShiftedPerspectiveProjection({
+    required this.fovRadiansY,
+    required this.near,
+    required this.far,
+    required this.horizontalShift,
+    required this.eyeOffsetOverConvergence,
+  });
+
+  final double fovRadiansY;
+  final double near;
+  final double far;
+  final double horizontalShift;
+  final double eyeOffsetOverConvergence;
+
+  @override
+  vm.Matrix4 getProjectionMatrix(double aspectRatio) {
+    final matrix = PerspectiveProjection(
+      fovRadiansY: fovRadiansY,
+      near: near,
+      far: far,
+    ).getProjectionMatrix(aspectRatio);
+    // flutter_scene uses a left-handed view: clip.w = view.z and
+    // clip.x = P00 * view.x + P02 * view.z. At the convergence point,
+    // view.x = -eyeOffset, so adding P00 * eyeOffset / distance cancels
+    // baseline disparity. The independent inset remains in normalized space.
+    matrix.storage[8] =
+        horizontalShift + matrix.storage[0] * eyeOffsetOverConvergence;
+    return matrix;
+  }
 }

@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0 — 2026-09-05
+
+### Added
+
+- `VrWorldNavigationScope` supplies a host-owned HOME action to stereo scenes.
+  The HOME button is placed once in world space and remains selectable by gaze
+  independently of application targets.
+- Re-export world action panels/poses and advanced 3D controls from
+  `vrlizate_widgets`, alongside the multimodal driver/arbiter interfaces.
+- `StereoHeadRig.screenRight` exposes the renderer's screen-horizontal axis
+  separately from the underlying rig's local `right` direction.
+- Projection regression tests cover near/far disparity, convergence,
+  off-center and rotated poses, and agreement between reticles and gaze rays.
+
+### Fixed
+
+- Corrected the left/right eye baseline to match flutter_scene's view convention,
+  fixing inverted stereo depth.
+- Replaced toe-in cameras with parallel cameras and an asymmetric off-axis
+  projection. This preserves the configured convergence plane and image inset
+  without vertical disparity in projected panel corners.
+- Corrected signed binocular angular parallax, including disabled/infinite
+  convergence; non-finite convergence settings no longer poison camera rays.
+- Suppress dwell before advancing its state, so releasing a higher-priority
+  controller restarts selection on the same target after hysteresis. Hover is
+  preserved and suppressed dwell does not mark the target as already selected.
+- Decorative hand visuals no longer intercept raycasts. They share three meshes
+  and reuse scratch vectors and node transforms during animation.
+
+### Packaging and documented limits
+
+- Prepare the package for pub.dev with hosted dependencies on
+  `vrlizate ^1.11.0` and `vrlizate_widgets ^0.3.0`; local workspace overrides
+  are excluded from the archive.
+- Document simulated hands, orientation-only tracking, frame-interval quality
+  heuristics and the absence of a frame-rate guarantee.
+- Document that the custom projection currently bypasses directional shadows,
+  SSAO and SSR in flutter_scene 0.22.2, and that exposed lens-distortion
+  coefficients are not applied. Remove earlier claims that convergence
+  guarantees freedom from double vision or eye fatigue.
+- Record the tested SDK and the companion Home's unresolved low-end
+  profile-performance limitation.
+
+The historical 0.3.0 notes below describe the earlier implementation. Its toe-in
+and guaranteed-comfort claims are superseded by the corrections and limitations
+in 0.4.0.
+
 ## 0.3.0 — 2026-09-03
 
 ### Added
