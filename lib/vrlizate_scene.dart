@@ -16,9 +16,12 @@ export 'src/vr_look.dart';
 export 'src/vr_spatial_audio.dart';
 export 'src/vr_thermal_governor.dart';
 export 'src/vr_world_navigation_scope.dart';
+export 'src/vr_input_session_scope.dart';
 export 'package:vrlizate/vrlizate.dart'
     show
         VrInputArbiter,
+        VrInputEvent,
+        VrInputListener,
         VrInputPriority,
         VrInputSource,
         VrInputType,

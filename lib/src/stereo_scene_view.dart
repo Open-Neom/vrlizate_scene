@@ -10,7 +10,9 @@ import 'package:vrlizate/vrlizate.dart'
         GazePointer,
         HeadTracker,
         InertialTapDetector,
-        VrInputArbiter;
+        VrInputArbiter,
+        VrInputEvent,
+        VrInputType;
 import 'package:vrlizate_widgets/vrlizate_widgets.dart'
     show VrButton3D, VrTextLabel;
 
@@ -19,6 +21,7 @@ import 'simulated_hand_visuals.dart';
 import 'stereo_head_rig.dart';
 import 'vr_look.dart';
 import 'vr_world_navigation_scope.dart';
+import 'vr_input_session_scope.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
 /// vrlizate input stack.
@@ -195,6 +198,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   int _worldHomeGeneration = 0;
 
   static const String _worldHomeNodeName = '__vrlizate_system_home__';
+  VrInputArbiter? _activeArbiter;
 
   /// The quality preset currently in effect.
   VrQualityPreset? get effectivePreset => _preset;
@@ -250,7 +254,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     }
 
     _gaze.onDwellProgress = (_, p) {
-      if (widget.arbiter != null && widget.arbiter!.isGazeSuppressed) {
+      if (_activeArbiter != null && _activeArbiter!.isGazeSuppressed) {
         if (_dwellProgress.value != 0) _dwellProgress.value = 0;
         return;
       }
@@ -265,7 +269,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       }
     };
     _gaze.onGazeSelect = (id) {
-      if (widget.arbiter != null && widget.arbiter!.isGazeSuppressed) {
+      if (_activeArbiter != null && _activeArbiter!.isGazeSuppressed) {
         _dwellProgress.value = 0;
         return;
       }
@@ -289,9 +293,35 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   SimulatedHandVisuals? _handRig;
 
+  void _onArbiterEvent(VrInputEvent event) {
+    if (!mounted) return;
+    if ((event.type == VrInputType.select || event.type == VrInputType.trigger) &&
+        event.active) {
+      final currentId = _gaze.gazeTargetId;
+      if (currentId != null) {
+        final node = _nodesByName[currentId];
+        if (node != null) {
+          _activateGazeNode(node);
+          if (widget.enableHaptics) HapticFeedback.selectionClick();
+        }
+      }
+    }
+  }
+
+  void _updateActiveArbiter() {
+    final nextArbiter =
+        widget.arbiter ?? VrInputSessionScope.arbiterOf(context);
+    if (nextArbiter != _activeArbiter) {
+      _activeArbiter?.removeListener(_onArbiterEvent);
+      _activeArbiter = nextArbiter;
+      _activeArbiter?.addListener(_onArbiterEvent);
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _updateActiveArbiter();
     final next = VrWorldNavigationScope.maybeOf(context);
     if (next?.onHome != _worldNavigation?.onHome ||
         next?.homeLabel != _worldNavigation?.homeLabel) {
@@ -303,6 +333,9 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   @override
   void didUpdateWidget(covariant StereoSceneView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.arbiter != oldWidget.arbiter) {
+      _updateActiveArbiter();
+    }
     if (widget.quality != oldWidget.quality && widget.quality != null) {
       _applyPreset(widget.quality!);
     }
@@ -326,6 +359,8 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   @override
   void dispose() {
+    _activeArbiter?.removeListener(_onArbiterEvent);
+    _activeArbiter = null;
     _removeWorldHome();
     _handRig?.dispose();
     _tapDetector?.dispose();
@@ -408,7 +443,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       _gaze.update(
         dt,
         id,
-        dwellEnabled: !(widget.arbiter?.isGazeSuppressed ?? false),
+        dwellEnabled: !(_activeArbiter?.isGazeSuppressed ?? false),
       );
     }
     widget.onTick?.call(elapsed, dt);
