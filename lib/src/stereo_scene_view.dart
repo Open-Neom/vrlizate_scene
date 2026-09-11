@@ -22,6 +22,7 @@ import 'stereo_head_rig.dart';
 import 'vr_look.dart';
 import 'vr_world_navigation_scope.dart';
 import 'vr_input_session_scope.dart';
+import 'openxr/vr_openxr_swapchain_bridge.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
 /// vrlizate input stack.
@@ -62,7 +63,14 @@ class StereoSceneView extends StatefulWidget {
     this.look,
     this.convergenceDistance = 1.8,
     this.arbiter,
+    this.openXrBridge,
   });
+
+  /// Optional OpenXR swapchain bridge for direct external GPU render-target presentation.
+  ///
+  /// When provided on standalone hardware (e.g. Meta Quest 3), the stereo scene
+  /// render dispatch can bypass Flutter's Canvas and render directly to hardware swapchains.
+  final VrOpenXrSwapchainBridge? openXrBridge;
 
   /// Optional input arbiter for unified multimodal priority & gaze suppression.
   ///

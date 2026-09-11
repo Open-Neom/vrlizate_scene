@@ -17,6 +17,11 @@ export 'src/vr_spatial_audio.dart';
 export 'src/vr_thermal_governor.dart';
 export 'src/vr_world_navigation_scope.dart';
 export 'src/vr_input_session_scope.dart';
+export 'src/openxr/vr_gpu_external_render_target.dart';
+export 'src/openxr/vr_openxr_swapchain_bridge.dart';
+export 'src/openxr/vr_openxr_native_bridge.dart';
+export 'src/openxr/vr_decoupled_render_loop.dart';
+export 'src/openxr/vr_spatial_ui_quad_layer.dart';
 export 'package:vrlizate/vrlizate.dart'
     show
         VrInputArbiter,
