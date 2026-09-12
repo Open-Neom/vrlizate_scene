@@ -63,7 +63,17 @@ class StereoHeadRig implements RotationTarget {
   @override
   void reset() => cameraRig.reset();
 
+  /// Sets the absolute gaze orientation (yaw, pitch) in radians.
+  @override
+  void setOrientation(double yaw, double pitch) =>
+      cameraRig.setOrientation(yaw, pitch);
+
+  /// Sets the vertical elevation (pitch) directly in radians.
+  @override
+  void setPitch(double pitch) => cameraRig.setPitch(pitch);
+
   /// Recenters the horizontal head heading (Yaw = 0°).
+  @override
   void recenter() => cameraRig.recenter();
 
   /// World-space midpoint between the eyes.

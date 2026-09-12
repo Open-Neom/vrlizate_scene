@@ -303,7 +303,10 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   void _onArbiterEvent(VrInputEvent event) {
     if (!mounted) return;
-    if ((event.type == VrInputType.select || event.type == VrInputType.trigger) &&
+    if ((event.type == VrInputType.select ||
+            event.type == VrInputType.trigger ||
+            event.type == VrInputType.buttonA ||
+            event.type == VrInputType.buttonR) &&
         event.active) {
       final currentId = _gaze.gazeTargetId;
       if (currentId != null) {
@@ -311,6 +314,26 @@ class _StereoSceneViewState extends State<StereoSceneView> {
         if (node != null) {
           _activateGazeNode(node);
           if (widget.enableHaptics) HapticFeedback.selectionClick();
+        }
+      }
+    } else if (event.type == VrInputType.navigate && event.active) {
+      final data = event.data;
+      if (data != null) {
+        final stickX = (data['stickX'] ?? data['x'] as num?)?.toDouble() ?? 0.0;
+        final stickY = (data['stickY'] ?? data['y'] as num?)?.toDouble() ?? 0.0;
+        final turn = (data['turn'] ?? data['lookX'] as num?)?.toDouble() ?? 0.0;
+        final pitch = (data['pitch'] ?? data['lookY'] as num?)?.toDouble() ?? 0.0;
+
+        if (turn.abs() > 0.05 || pitch.abs() > 0.05) {
+          _rig.rotate(-turn * 0.035, -pitch * 0.025);
+        }
+        if (stickX.abs() > 0.05 || stickY.abs() > 0.05) {
+          final fwd = _rig.forward;
+          final right = _rig.right;
+          const speed = 0.06;
+          final dx = (right.x * stickX - fwd.x * stickY) * speed;
+          final dz = (right.z * stickX - fwd.z * stickY) * speed;
+          _rig.eyeCenter += vm.Vector3(dx, 0.0, dz);
         }
       }
     }
