@@ -5,7 +5,48 @@ the [vrlizate](https://pub.dev/packages/vrlizate) input and VR engine.
 The core remains renderer-independent; this optional package adds GPU-rendered
 PBR scenes, head orientation, gaze selection and world-space navigation.
 
+## Development 0.5.0 / Desarrollo sin publicar
+
+Requires core 1.12.0, which must be published before this release can resolve
+from pub.dev. The workspace uses sibling overrides for development.
+
+Both engines now share normalized frame-based input. `select` is a semantic
+action; listeners must check `event.handled` and call `event.consume()` when
+handling it. HOME/recenter precede gameplay. `onInteractionRay` provides a
+borrowed current ray for drag/manipulation; copy it if retained.
+
+OpenXR and quad layers remain **experimental scaffolding**, not an implemented
+native compositor. Mock operation requires explicit opt-in. They do not prove
+zero-copy presentation, 0 ms UI cost or a device frame rate. Await loop disposal.
+
+ES: selección única, rayo actual y locomoción por tiempo; HOME tiene prioridad.
+Estas versiones están preparadas localmente, no publicadas. OpenXR sigue siendo
+experimental y requiere integración nativa y validación física.
+
 ## Requirements and installation
+
+`VrRetainedSceneAdapter` converts a core scene graph into retained GPU nodes,
+geometry and materials. Call `sync()` after simulation updates and dispose the
+adapter with its owner. It does not rasterize the entire world into a texture.
+Unsupported custom renderables fail explicitly; hologram glitch/scanline effects
+are approximated with diagnostics. `VrRetainedResourceFactory.headless()` is a
+deliberate CPU-test seam, not a production rendering fallback.
+
+`VrViewerProfileScope` distributes validated IPD, image inset, FOV and convergence
+settings across `StereoSceneView` instances without changing head/world poses.
+The host persists profiles through `toJson`/`fromJson`. Physical lens calibration
+is still required; these settings do not implement a calibrated lens warp.
+
+ES: el adaptador conserva la simulación y convierte su geometría a GPU; no
+convierte el mundo en un bitmap. El perfil óptico se comparte entre escenas,
+pero no garantiza fusión binocular ni una tasa de frames concreta.
+
+`StereoSceneView` waits for confirmed shader readiness before starting its
+renderer, input or tracking. `VrGpuResourceGate` can also wrap a lazy demo factory
+before GPU-dependent constructors. Failed initialization offers explicit retry
+and Back where navigation is available, not an automatic retry loop. The error
+screen is intentionally ordinary Flutter UI: remove the headset to recover
+when GPU rendering itself is unavailable.
 
 - Dart `^3.10.0`, Flutter `>=3.44.0`, and a runtime/backend supported by
   `flutter_scene` and Flutter GPU. The SDK constraint alone does not guarantee
@@ -15,7 +56,7 @@ PBR scenes, head orientation, gaze selection and world-space navigation.
 - This release was tested locally using Flutter
   `3.48.0-1.0.pre-371` / Dart `3.14.0-147.0.dev`. This records the tested
   environment; it is not a claim that every listed platform has been validated.
-- The release depends on hosted `vrlizate ^1.11.0` and
+- The release depends on hosted `vrlizate ^1.12.0` and
   `vrlizate_widgets ^0.3.0`. Those versions must be available before publishing
   or resolving this package from pub.dev.
 

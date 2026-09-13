@@ -11,12 +11,16 @@ library;
 
 export 'src/quality_preset.dart';
 export 'src/stereo_head_rig.dart';
+export 'src/vr_viewer_profile.dart';
+export 'src/vr_gpu_resource_gate.dart';
 export 'src/stereo_scene_view.dart';
+export 'src/retained_scene_adapter.dart';
 export 'src/vr_look.dart';
 export 'src/vr_spatial_audio.dart';
 export 'src/vr_thermal_governor.dart';
 export 'src/vr_world_navigation_scope.dart';
 export 'src/vr_input_session_scope.dart';
+export 'src/vr_controller_feedback.dart';
 export 'src/openxr/vr_gpu_external_render_target.dart';
 export 'src/openxr/vr_openxr_swapchain_bridge.dart';
 export 'src/openxr/vr_openxr_native_bridge.dart';
@@ -62,5 +66,7 @@ export 'package:vrlizate_widgets/vrlizate_widgets.dart'
         VrWorldPose,
         VrWorldAction,
         VrWorldActionPanel3D,
+        VrWorldTextSpec,
+        VrWorldTextNodeBuilder,
         controlMaterial,
         VrControlMeshBuilder;

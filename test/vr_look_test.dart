@@ -6,7 +6,7 @@ void main() {
   group('VrLook', () {
     test('standard applies AgX tone mapping and gentle bloom', () {
       final s = EnvironmentSettings();
-      VrLook.standard.applyTo(s, VrQualityPreset.high);
+      VrLook.standard.applyTo(s, VrQualityPreset.ultra);
 
       expect(s.toneMapping, ToneMappingMode.agx);
       expect(s.exposure, 1.0);
@@ -25,25 +25,30 @@ void main() {
       expect(s.bloomEnabled, isFalse);
 
       VrLook.standard.applyTo(s, VrQualityPreset.high);
+      expect(s.bloomEnabled, isFalse);
+      VrLook.standard.applyTo(s, VrQualityPreset.ultra);
       expect(s.bloomEnabled, isTrue);
     });
 
-    test('ambient occlusion runs on high and ultra tiers, disabled on lower tiers', () {
-      final s = EnvironmentSettings();
-      VrLook.cinematic.applyTo(s, VrQualityPreset.medium);
-      expect(s.ambientOcclusionEnabled, isFalse);
+    test(
+      'ambient occlusion runs on high and ultra tiers, disabled on lower tiers',
+      () {
+        final s = EnvironmentSettings();
+        VrLook.cinematic.applyTo(s, VrQualityPreset.medium);
+        expect(s.ambientOcclusionEnabled, isFalse);
 
-      VrLook.cinematic.applyTo(s, VrQualityPreset.high);
-      expect(s.ambientOcclusionEnabled, isTrue);
-      expect(s.ambientOcclusionHalfResolution, isTrue);
+        VrLook.cinematic.applyTo(s, VrQualityPreset.high);
+        expect(s.ambientOcclusionEnabled, isTrue);
+        expect(s.ambientOcclusionHalfResolution, isTrue);
 
-      VrLook.cinematic.applyTo(s, VrQualityPreset.ultra);
-      expect(s.ambientOcclusionEnabled, isTrue);
-    });
+        VrLook.cinematic.applyTo(s, VrQualityPreset.ultra);
+        expect(s.ambientOcclusionEnabled, isTrue);
+      },
+    );
 
     test('cinematic enables grading, vignette and stronger bloom', () {
       final s = EnvironmentSettings();
-      VrLook.cinematic.applyTo(s, VrQualityPreset.high);
+      VrLook.cinematic.applyTo(s, VrQualityPreset.ultra);
 
       expect(s.colorGradingEnabled, isTrue);
       expect(s.contrast, 1.08);

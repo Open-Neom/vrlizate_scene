@@ -222,7 +222,7 @@ void main() {
 
   group('VrOpenXrNativeBridge', () {
     test('delegates cleanly to fallback when native dylib is absent', () async {
-      final nativeBridge = VrOpenXrNativeBridge();
+      final nativeBridge = VrOpenXrNativeBridge(allowMockFallback: true);
       expect(nativeBridge.isSessionRunning, isFalse);
 
       final ok = await nativeBridge.initializeSession();

@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:flutter_scene/scene.dart';
@@ -10,18 +11,24 @@ import 'package:vrlizate/vrlizate.dart'
         GazePointer,
         HeadTracker,
         InertialTapDetector,
+        VrSensorCapabilities,
         VrInputArbiter,
-        VrInputEvent,
-        VrInputType;
+        VrInputEvent;
 import 'package:vrlizate_widgets/vrlizate_widgets.dart'
     show VrButton3D, VrTextLabel;
 
 import 'quality_preset.dart';
+import 'vr_gpu_resource_gate.dart';
 import 'simulated_hand_visuals.dart';
 import 'stereo_head_rig.dart';
 import 'vr_look.dart';
 import 'vr_world_navigation_scope.dart';
 import 'vr_input_session_scope.dart';
+import 'vr_controller_feedback.dart';
+import 'vr_controller_feedback_visuals.dart';
+import 'vr_scene_input_controller.dart';
+import 'vr_scene_pointer_interaction.dart';
+import 'vr_viewer_profile.dart';
 import 'openxr/vr_openxr_swapchain_bridge.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
@@ -64,13 +71,27 @@ class StereoSceneView extends StatefulWidget {
     this.convergenceDistance = 1.8,
     this.arbiter,
     this.openXrBridge,
+    this.onInteractionRay,
+    this.locomotionEnabled = true,
+    this.lookInputEnabled = true,
+    this.onUnhandledTempleTap,
   });
 
-  /// Optional OpenXR swapchain bridge for direct external GPU render-target presentation.
+  /// Reserved experimental OpenXR integration hook; currently unused.
   ///
-  /// When provided on standalone hardware (e.g. Meta Quest 3), the stereo scene
-  /// render dispatch can bypass Flutter's Canvas and render directly to hardware swapchains.
+  /// Supplying this does not bypass Canvas or activate native XR rendering.
+  /// This widget still uses the ordinary flutter_scene stereo render path.
   final VrOpenXrSwapchainBridge? openXrBridge;
+
+  /// Current controller ray (or head gaze), before demo listeners and per tick.
+  /// The ray is reused: copy its vectors if retaining it for drag/input logic.
+  final void Function(vm.Ray ray)? onInteractionRay;
+
+  /// Disable for grid puzzles, seated experiences and vehicle-owned motion.
+  final bool locomotionEnabled;
+
+  /// Whether the look stick rotates the view; head tracking is unaffected.
+  final bool lookInputEnabled;
 
   /// Optional input arbiter for unified multimodal priority & gaze suppression.
   ///
@@ -83,13 +104,16 @@ class StereoSceneView extends StatefulWidget {
   /// An off-axis projection keeps the cameras parallel and aligns the views
   /// at this depth. Null or non-positive values disable the convergence shift.
   /// Physical lens calibration remains necessary for viewing comfort.
+  /// A shared [VrViewerProfileScope] overrides this value and the rig's FOV.
   final double? convergenceDistance;
 
   /// Interpupillary distance in meters (defaults to 0.064m / 64mm).
+  /// An explicit value overrides the shared viewer profile's IPD.
   final double? ipd;
 
   /// Optical image-center correction. Positive values move both eye images
   /// inward without changing the virtual cameras' anatomical IPD.
+  /// An explicit value overrides the shared viewer profile's inset.
   final double? stereoImageInset;
 
   /// Whether double-tapping on screen recenters the horizontal gaze heading.
@@ -100,6 +124,11 @@ class StereoSceneView extends StatefulWidget {
 
   /// Whether physical tap on visor/temple triggers instant gaze select and double-tap recenters.
   final bool enableTempleTap;
+
+  /// Called for a visor tap when this view has no actionable target. Retained
+  /// game hosts can dispatch their primary action through the shared arbiter.
+  /// The current interaction ray is published before this callback.
+  final VoidCallback? onUnhandledTempleTap;
 
   /// Whether to render decorative, head-relative holographic hands.
   ///
@@ -172,25 +201,45 @@ class StereoSceneView extends StatefulWidget {
   final VrLook? look;
 
   @override
-  State<StereoSceneView> createState() => _StereoSceneViewState();
+  State<StereoSceneView> createState() => _StereoSceneResourceGateState();
 }
 
-class _StereoSceneViewState extends State<StereoSceneView> {
+class _StereoSceneResourceGateState extends State<StereoSceneView> {
+  @override
+  Widget build(BuildContext context) => VrGpuResourceGate(
+    onBack: VrWorldNavigationScope.maybeOf(context)?.onHome,
+    builder: (_) => _ReadyStereoSceneView(configuration: widget),
+  );
+}
+
+/// Do not start scene rendering, sensors or input listeners while resource
+/// initialization has failed. Their existing lifecycle begins only on success.
+class _ReadyStereoSceneView extends StatefulWidget {
+  const _ReadyStereoSceneView({required this.configuration});
+  final StereoSceneView configuration;
+
+  @override
+  State<_ReadyStereoSceneView> createState() => _StereoSceneViewState();
+}
+
+class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
+  StereoSceneView get view => widget.configuration;
   late final StereoHeadRig _rig =
-      widget.rig ??
+      view.rig ??
       StereoHeadRig(
-        ipd: widget.ipd ?? CameraRig.defaultIpd,
-        convergenceDistance: widget.convergenceDistance,
+        ipd: view.ipd ?? CameraRig.defaultIpd,
+        convergenceDistance: view.convergenceDistance,
       );
   late final HeadTracker _headTracker =
-      widget.headTracker ?? HeadTracker(target: _rig);
+      view.headTracker ?? HeadTracker(target: _rig);
   late final GazePointer _gaze = GazePointer(
     cameraRig: _rig.cameraRig,
-    dwellDuration: widget.gazeDwellSeconds,
-    enableHaptics: widget.enableHaptics,
+    dwellDuration: view.gazeDwellSeconds,
+    enableHaptics: view.enableHaptics,
   );
 
   final Map<String, Node> _nodesByName = {};
+  final _gazeLifecycle = VrSceneGazeLifecycle();
   final ValueNotifier<double> _dwellProgress = ValueNotifier(0);
   final ValueNotifier<double> _zenithProgress = ValueNotifier(0);
   double _zenithTimer = 0;
@@ -207,6 +256,33 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   static const String _worldHomeNodeName = '__vrlizate_system_home__';
   VrInputArbiter? _activeArbiter;
+  late final VrSceneInputController _input = VrSceneInputController(
+    rig: _rig,
+    locomotionEnabled: view.locomotionEnabled,
+    lookInputEnabled: view.lookInputEnabled,
+    pick: _pickInputNode,
+    activate: (node) {
+      _activateGazeNode(node);
+      if (view.enableHaptics) HapticFeedback.selectionClick();
+    },
+    recenter: () {
+      _headTracker.recenter();
+      _rig.recenter();
+    },
+    isSystemNode: (node) => node.name == _worldHomeNodeName,
+  );
+  final _PointerRepaint _pointerRepaint = _PointerRepaint();
+  final vm.Vector3 _pointerPosition = vm.Vector3.zero();
+  double _pointerDistance = 1.8;
+  final VrScenePointerResolver _pointerResolver = VrScenePointerResolver();
+  final VrSceneViewerProfileBinding _profileBinding =
+      VrSceneViewerProfileBinding();
+  VrViewerProfile? _viewerProfile;
+  ValueListenable<VrControllerFeedbackState>? _feedbackSource;
+  VrControllerFeedbackVisuals? _feedbackVisuals;
+  Scene? _feedbackScene;
+  final _PointerRepaint _feedbackRepaint = _PointerRepaint();
+  bool _feedbackCreationFailed = false;
 
   /// The quality preset currently in effect.
   VrQualityPreset? get effectivePreset => _preset;
@@ -220,43 +296,36 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   void _applyPreset(VrQualityPreset preset) {
     _preset = preset;
-    widget.scene.antiAliasingMode = preset.antiAliasing;
-    widget.scene.postProcess.bloom.enabled = preset.bloomEnabled;
-    widget.look?.applyToScene(widget.scene, preset);
-    widget.onQualityChanged?.call(preset);
+    view.scene.antiAliasingMode = preset.antiAliasing;
+    view.scene.postProcess.bloom.enabled = preset.bloomEnabled;
+    view.look?.applyToScene(view.scene, preset);
+    view.onQualityChanged?.call(preset);
   }
 
   @override
   void initState() {
     super.initState();
-    if (widget.rig == null) {
+    if (view.rig == null) {
       _rig.eyeCenter.setValues(0, 1.6, 0);
     }
-    if (widget.ipd != null) {
-      _rig.ipd = widget.ipd!;
+    if (view.ipd != null) {
+      _rig.ipd = view.ipd!;
     }
-    if (widget.stereoImageInset != null) {
-      _rig.stereoImageInset = widget.stereoImageInset!;
+    if (view.stereoImageInset != null) {
+      _rig.stereoImageInset = view.stereoImageInset!;
     }
-    _headTracker.start();
+    // Native desktop has no sensors_plus motion backend. Keep the tracker for
+    // touch/recenter and preserve explicitly supplied custom sensor streams.
+    if (_headTracker.canStart) _headTracker.start();
 
     // Zero-latency temple/visor tap trigger
-    if (widget.enableTempleTap) {
+    if (view.enableTempleTap && VrSensorCapabilities.supportsDeviceMotion) {
       _tapDetector = InertialTapDetector(
-        onSingleTap: () {
-          final currentId = _gaze.gazeTargetId;
-          if (currentId != null) {
-            final node = _nodesByName[currentId];
-            if (node != null) {
-              _activateGazeNode(node);
-              if (widget.enableHaptics) HapticFeedback.selectionClick();
-            }
-          }
-        },
+        onSingleTap: _handleTempleTap,
         onDoubleTap: () {
           _headTracker.recenter();
           _rig.recenter();
-          if (widget.enableHaptics) HapticFeedback.mediumImpact();
+          if (view.enableHaptics) HapticFeedback.mediumImpact();
         },
       )..start();
     }
@@ -272,8 +341,10 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       _dwellProgress.value = 0;
       if (id == _worldHomeNodeName) {
         _worldHomeButton?.onHoverExit(id);
-      } else if (widget.gazeEnabled) {
-        widget.onGazeHoverChanged?.call(null);
+      } else {
+        // Clear a prior app hover even when gaze was just disabled. This runs
+        // from the input tick, never synchronously in didUpdateWidget.
+        view.onGazeHoverChanged?.call(null);
       }
     };
     _gaze.onGazeSelect = (id) {
@@ -289,13 +360,13 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       final node = _nodesByName[id];
       if (id == _worldHomeNodeName) {
         _worldHomeButton?.onHoverEnter(id);
-      } else if (widget.gazeEnabled) {
-        widget.onGazeHoverChanged?.call(node);
+      } else if (view.gazeEnabled) {
+        view.onGazeHoverChanged?.call(node);
       }
     };
 
-    if (widget.enableHandTracking) {
-      _handRig = SimulatedHandVisuals(widget.scene.root, widget.handGlowColor);
+    if (view.enableHandTracking) {
+      _handRig = SimulatedHandVisuals(view.scene.root, view.handGlowColor);
     }
   }
 
@@ -303,56 +374,92 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   void _onArbiterEvent(VrInputEvent event) {
     if (!mounted) return;
-    if ((event.type == VrInputType.select ||
-            event.type == VrInputType.trigger ||
-            event.type == VrInputType.buttonA ||
-            event.type == VrInputType.buttonR) &&
-        event.active) {
-      final currentId = _gaze.gazeTargetId;
-      if (currentId != null) {
-        final node = _nodesByName[currentId];
-        if (node != null) {
-          _activateGazeNode(node);
-          if (widget.enableHaptics) HapticFeedback.selectionClick();
-        }
-      }
-    } else if (event.type == VrInputType.navigate && event.active) {
-      final data = event.data;
-      if (data != null) {
-        final stickX = (data['stickX'] ?? data['x'] as num?)?.toDouble() ?? 0.0;
-        final stickY = (data['stickY'] ?? data['y'] as num?)?.toDouble() ?? 0.0;
-        final turn = (data['turn'] ?? data['lookX'] as num?)?.toDouble() ?? 0.0;
-        final pitch = (data['pitch'] ?? data['lookY'] as num?)?.toDouble() ?? 0.0;
+    _input.handleEvent(event);
+  }
 
-        if (turn.abs() > 0.05 || pitch.abs() > 0.05) {
-          _rig.rotate(-turn * 0.035, -pitch * 0.025);
-        }
-        if (stickX.abs() > 0.05 || stickY.abs() > 0.05) {
-          final fwd = _rig.forward;
-          final right = _rig.right;
-          const speed = 0.06;
-          final dx = (right.x * stickX - fwd.x * stickY) * speed;
-          final dz = (right.z * stickX - fwd.z * stickY) * speed;
-          _rig.eyeCenter += vm.Vector3(dx, 0.0, dz);
-        }
-      }
-    }
+  void _onSystemInputEvent(VrInputEvent event) {
+    if (!mounted) return;
+    _input.handleSystemEvent(event);
+    view.onInteractionRay?.call(_input.ray);
   }
 
   void _updateActiveArbiter() {
-    final nextArbiter =
-        widget.arbiter ?? VrInputSessionScope.arbiterOf(context);
+    final nextArbiter = view.arbiter ?? VrInputSessionScope.arbiterOf(context);
     if (nextArbiter != _activeArbiter) {
       _activeArbiter?.removeListener(_onArbiterEvent);
+      _activeArbiter?.removeListener(_onSystemInputEvent);
+      _input.reset();
       _activeArbiter = nextArbiter;
+      _activeArbiter?.addListener(_onSystemInputEvent, first: true);
       _activeArbiter?.addListener(_onArbiterEvent);
     }
+  }
+
+  void _updateFeedbackSource() {
+    final next = VrControllerFeedbackScope.maybeOf(context)?.state;
+    if (identical(next, _feedbackSource)) return;
+    _feedbackSource?.removeListener(_onFeedbackChanged);
+    _feedbackSource = next;
+    _feedbackCreationFailed = false;
+    if (next == null) {
+      _feedbackVisuals?.dispose();
+      _feedbackVisuals = null;
+      _feedbackScene = null;
+      _feedbackRepaint.markDirty();
+      return;
+    }
+    next.addListener(_onFeedbackChanged);
+    _onFeedbackChanged();
+  }
+
+  void _onFeedbackChanged() {
+    if (!mounted) return;
+    final feedback = _feedbackSource?.value;
+    if (feedback == null) return;
+    // Do not allocate GPU assets for views that never use a remote controller.
+    if (_feedbackVisuals == null &&
+        feedback.shown &&
+        !_feedbackCreationFailed) {
+      try {
+        // An independent GPU scene owns independent color/depth targets.
+        // Its alpha-transparent output is composed after the world. Merely
+        // disabling picking on a world node cannot prevent floor occlusion.
+        final overlay = Scene()
+          ..skybox = null
+          ..environment = EnvironmentMap.empty()
+          ..toneMapping = ToneMappingMode.linear
+          ..antiAliasingMode = AntiAliasingMode.none;
+        final visuals = VrControllerFeedbackVisuals(overlay.root);
+        _feedbackScene = overlay;
+        _feedbackVisuals = visuals;
+        visuals.ready.catchError((Object error, StackTrace stack) {
+          if (mounted && identical(_feedbackVisuals, visuals)) {
+            debugPrint(
+              'Controller feedback labels unavailable: $error\n$stack',
+            );
+          }
+        });
+      } catch (error, stack) {
+        _feedbackCreationFailed = true;
+        debugPrint('Controller feedback unavailable: $error\n$stack');
+        return;
+      }
+    }
+    _feedbackVisuals?.setState(feedback);
+    _feedbackVisuals?.updatePose(_rig);
+    _feedbackRepaint.markDirty();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _updateActiveArbiter();
+    _updateFeedbackSource();
+    final profile = VrViewerProfileScope.maybeOf(context)?.profile;
+    if (profile != _viewerProfile) {
+      _viewerProfile = profile;
+      _applyViewerProfile();
+    }
     final next = VrWorldNavigationScope.maybeOf(context);
     if (next?.onHome != _worldNavigation?.onHome ||
         next?.homeLabel != _worldNavigation?.homeLabel) {
@@ -361,47 +468,88 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     }
   }
 
+  void _applyViewerProfile() => _profileBinding.apply(
+    _rig,
+    _viewerProfile,
+    explicitIpd: view.ipd,
+    explicitInset: view.stereoImageInset,
+  );
+
   @override
-  void didUpdateWidget(covariant StereoSceneView oldWidget) {
+  void didUpdateWidget(covariant _ReadyStereoSceneView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.arbiter != oldWidget.arbiter) {
+    final previous = oldWidget.configuration;
+    if (!identical(previous.scene, view.scene)) {
+      _feedbackVisuals?.dispose();
+      _feedbackVisuals = null;
+      _feedbackScene = null;
+      _feedbackCreationFailed = false;
+      _onFeedbackChanged();
+    }
+    _gazeLifecycle.configurationChanged(
+      previousGazeEnabled: previous.gazeEnabled,
+      gazeEnabled: view.gazeEnabled,
+    );
+    _input.locomotionEnabled = view.locomotionEnabled;
+    _input.lookInputEnabled = view.lookInputEnabled;
+    if (view.arbiter != previous.arbiter) {
       _updateActiveArbiter();
     }
-    if (widget.quality != oldWidget.quality && widget.quality != null) {
-      _applyPreset(widget.quality!);
+    if (view.quality != previous.quality && view.quality != null) {
+      _applyPreset(view.quality!);
     }
-    if (widget.ipd != oldWidget.ipd && widget.ipd != null) {
-      _rig.ipd = widget.ipd!;
+    if (view.ipd != previous.ipd && view.ipd != null) {
+      _rig.ipd = view.ipd!;
     }
-    if (widget.stereoImageInset != oldWidget.stereoImageInset &&
-        widget.stereoImageInset != null) {
-      _rig.stereoImageInset = widget.stereoImageInset!;
+    if (view.stereoImageInset != previous.stereoImageInset &&
+        view.stereoImageInset != null) {
+      _rig.stereoImageInset = view.stereoImageInset!;
     }
-    if (widget.convergenceDistance != oldWidget.convergenceDistance) {
-      _rig.convergenceDistance = widget.convergenceDistance;
+    if (_viewerProfile == null &&
+        view.convergenceDistance != previous.convergenceDistance) {
+      _rig.convergenceDistance = view.convergenceDistance;
     }
-    if (widget.look != oldWidget.look && widget.look != null) {
-      widget.look!.applyToScene(
-        widget.scene,
-        _preset ?? VrQualityPreset.medium,
-      );
+    if (view.ipd != previous.ipd ||
+        view.stereoImageInset != previous.stereoImageInset) {
+      _applyViewerProfile();
+    }
+    if (view.look != previous.look && view.look != null) {
+      view.look!.applyToScene(view.scene, _preset ?? VrQualityPreset.medium);
     }
   }
 
   @override
   void dispose() {
+    _feedbackSource?.removeListener(_onFeedbackChanged);
+    _feedbackSource = null;
+    _feedbackVisuals?.dispose();
+    _feedbackVisuals = null;
+    _feedbackScene = null;
+    _feedbackRepaint.dispose();
     _activeArbiter?.removeListener(_onArbiterEvent);
+    _activeArbiter?.removeListener(_onSystemInputEvent);
     _activeArbiter = null;
+    _input.reset();
     _removeWorldHome();
     _handRig?.dispose();
     _tapDetector?.dispose();
-    if (widget.headTracker == null) _headTracker.stop();
+    if (view.headTracker == null) _headTracker.stop();
     _dwellProgress.dispose();
     _zenithProgress.dispose();
+    _pointerRepaint.dispose();
     super.dispose();
   }
 
   void _tick(Duration elapsed, double dt) {
+    final systemGazeEnabled = _worldNavigation != null;
+    _gazeLifecycle.beforeTick(
+      _gaze,
+      gazeEnabled: view.gazeEnabled,
+      systemGazeEnabled: systemGazeEnabled,
+    );
+    final hadPointer = _input.pointerActive;
+    _input.update(dt);
+    view.onInteractionRay?.call(_input.ray);
     _monitorFrameTime(dt);
 
     final t = elapsed.inMicroseconds / 1000000.0;
@@ -417,7 +565,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
     }
 
     // Hands-free zenith recenter (looking up > 55°).
-    if (widget.zenithRecenter) {
+    if (view.zenithRecenter) {
       if (_rig.cameraRig.pitch > 0.95) {
         _zenithTimer += dt;
         _zenithProgress.value = (_zenithTimer / 0.8).clamp(0.0, 1.0);
@@ -425,7 +573,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
           _zenithTriggered = true;
           _headTracker.recenter();
           _rig.recenter();
-          if (widget.enableHaptics) {
+          if (view.enableHaptics) {
             HapticFeedback.mediumImpact();
           }
         }
@@ -436,36 +584,14 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       }
     }
 
-    final systemGazeEnabled = _worldNavigation != null;
-    if (widget.gazeEnabled || systemGazeEnabled) {
-      final homeCenter = _worldHomeCenter;
-      var aimingAtHome = false;
-      if (systemGazeEnabled && homeCenter != null) {
-        final toHome = homeCenter - _rig.eyeCenter;
-        if (toHome.length2 > 0.0001) {
-          toHome.normalize();
-          // Cheap angular broad phase: preserve one raycast per frame on
-          // low-end devices, and only grant system priority near HOME.
-          aimingAtHome = toHome.dot(_rig.forward) > 0.96;
-        }
+    if (view.gazeEnabled || systemGazeEnabled) {
+      final ray = _input.ray;
+      final node = _pickInputNode(ray);
+      if (_input.pointerActive) {
+        _pointerPosition.setFrom(ray.direction);
+        _pointerPosition.scale(_pointerDistance);
+        _pointerPosition.add(ray.origin);
       }
-      final systemHit = aimingAtHome
-          ? widget.scene.raycast(
-              _rig.gazeRay,
-              where: (node) => node.name == _worldHomeNodeName,
-            )
-          : null;
-      final hit =
-          systemHit ??
-          (widget.gazeEnabled
-              ? widget.scene.raycast(
-                  _rig.gazeRay,
-                  where: (node) =>
-                      node.name != _worldHomeNodeName &&
-                      (widget.gazeFilter?.call(node) ?? true),
-                )
-              : null);
-      final node = hit?.node;
       String? id;
       if (node != null && node.name.isNotEmpty) {
         id = node.name;
@@ -474,10 +600,75 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       _gaze.update(
         dt,
         id,
-        dwellEnabled: !(_activeArbiter?.isGazeSuppressed ?? false),
+        dwellEnabled:
+            !_input.pointerActive &&
+            !(_activeArbiter?.isGazeSuppressed ?? false),
       );
     }
-    widget.onTick?.call(elapsed, dt);
+    if (_input.pointerActive || hadPointer) _pointerRepaint.markDirty();
+    view.onTick?.call(elapsed, dt);
+    // Vehicle demos may update bodyYaw and eye position in their onTick.
+    final hadFeedback = _feedbackVisuals?.root.visible ?? false;
+    _feedbackVisuals?.updatePose(_rig);
+    final hasFeedback = _feedbackVisuals?.root.visible ?? false;
+    if (hadFeedback || hasFeedback) {
+      _feedbackRepaint.markDirty();
+    }
+  }
+
+  void _handleTempleTap() {
+    if (!mounted) return;
+    view.onInteractionRay?.call(_input.ray);
+    dispatchVrSceneTempleTap(
+      pick: () => _pickInputNode(_input.ray),
+      arbiter: _activeArbiter,
+      onUnhandled: view.onUnhandledTempleTap,
+      activate: (node) {
+        _activateGazeNode(node);
+        if (view.enableHaptics) HapticFeedback.selectionClick();
+      },
+    );
+  }
+
+  Node? _pickInputNode(vm.Ray ray) {
+    final homeCenter = _worldHomeCenter;
+    var aimingAtHome = false;
+    if (_worldNavigation != null && homeCenter != null) {
+      final toHome = homeCenter - ray.origin;
+      if (toHome.length2 > 0.0001) {
+        toHome.normalize();
+        aimingAtHome = toHome.dot(ray.direction) > 0.96;
+      }
+    }
+    final systemHit = aimingAtHome
+        ? view.scene.raycast(
+            ray,
+            where: (node) => node.name == _worldHomeNodeName,
+          )
+        : null;
+    final target = _pointerResolver.resolve(
+      systemHit: systemHit,
+      gazeEnabled: view.gazeEnabled,
+      pointerActive: _input.pointerActive,
+      fallbackDistance: _rig.convergenceDistance ?? 1.8,
+      pickSelectable: () => view.scene.raycast(
+        ray,
+        where: (node) =>
+            node.name.isNotEmpty &&
+            !node.name.startsWith(VrControllerFeedbackVisuals.nodePrefix) &&
+            node.name != _worldHomeNodeName &&
+            (view.gazeFilter?.call(node) ?? true),
+      ),
+      pickGeometry: () => view.scene.raycast(
+        ray,
+        where: (node) =>
+            !node.name.startsWith(VrControllerFeedbackVisuals.nodePrefix) &&
+            node.name != _worldHomeNodeName &&
+            (view.gazeFilter?.call(node) ?? true),
+      ),
+    );
+    _pointerDistance = _pointerResolver.distance;
+    return target;
   }
 
   void _activateGazeNode(Node node) {
@@ -485,7 +676,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       _worldHomeButton?.onSelect(_worldHomeNodeName);
       return;
     }
-    if (widget.gazeEnabled) widget.onGazeSelect?.call(node);
+    if (view.gazeEnabled) view.onGazeSelect?.call(node);
   }
 
   Future<void> _createWorldHome() async {
@@ -538,7 +729,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       _worldHomeCenter = center.clone();
       _worldHomeNodes = [...button.nodes, label.node];
       for (final node in _worldHomeNodes) {
-        widget.scene.add(node);
+        view.scene.add(node);
       }
     } catch (error, stackTrace) {
       debugPrint('Could not create world HOME control: $error\n$stackTrace');
@@ -550,7 +741,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   void _removeWorldHome() {
     _worldHomeGeneration++;
     for (final node in _worldHomeNodes) {
-      if (node.parent != null) widget.scene.remove(node);
+      if (node.parent != null) view.scene.remove(node);
     }
     _worldHomeNodes = const [];
     _worldHomeButton = null;
@@ -562,7 +753,7 @@ class _StereoSceneViewState extends State<StereoSceneView> {
   /// Rolling frame-time monitor: after a warmup, if the average frame time
   /// over a window exceeds the budget, quality steps down one tier.
   void _monitorFrameTime(double dt) {
-    if (!widget.dynamicScaling || _preset == null) return;
+    if (!view.dynamicScaling || _preset == null) return;
     if (_preset!.tier == VrQualityTier.low) return;
     _frameTimeCount++;
     if (_frameTimeCount <= _warmupFrames) return;
@@ -579,28 +770,28 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
   @override
   Widget build(BuildContext context) {
-    final preset = _preset ?? VrQualityPreset.resolve(context, widget.quality);
+    final preset = _preset ?? VrQualityPreset.resolve(context, view.quality);
     if (_preset == null) _applyPreset(preset);
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
     Widget child = SceneView(
-      widget.scene,
+      view.scene,
       viewsBuilder: (_) => _rig.buildStereoViews(),
       pixelRatio: dpr * preset.pixelRatioScale,
       onTick: _tick,
     );
 
-    if (widget.touchFallback || widget.doubleTapToRecenter) {
+    if (view.touchFallback || view.doubleTapToRecenter) {
       child = GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onPanUpdate: widget.touchFallback
+        onPanUpdate: view.touchFallback
             ? (d) => _headTracker.applyTouchDelta(d.delta.dx, d.delta.dy)
             : null,
-        onDoubleTap: widget.doubleTapToRecenter
+        onDoubleTap: view.doubleTapToRecenter
             ? () {
                 _headTracker.recenter();
                 _rig.recenter();
-                if (widget.enableHaptics) {
+                if (view.enableHaptics) {
                   HapticFeedback.mediumImpact();
                 }
               }
@@ -609,10 +800,31 @@ class _StereoSceneViewState extends State<StereoSceneView> {
       );
     }
 
-    final effectiveGaze = widget.gazeEnabled || _worldNavigation != null;
-    if ((widget.showReticle && effectiveGaze) ||
-        widget.showAlignmentDivider ||
-        widget.zenithRecenter) {
+    child = Stack(
+      fit: StackFit.expand,
+      children: [
+        child,
+        IgnorePointer(
+          child: CustomPaint(
+            willChange: true,
+            painter: VrControllerFeedbackPainter(
+              repaint: _feedbackRepaint,
+              rig: _rig,
+              render: () => _feedbackScene?.renderViews,
+              visible: () => _feedbackVisuals?.root.visible ?? false,
+              // This small unlit model does not need the main scene's full
+              // high-DPI resolve buffers or MSAA on memory-limited phones.
+              pixelRatio: min(dpr * preset.pixelRatioScale, 1.5),
+            ),
+          ),
+        ),
+      ],
+    );
+
+    final effectiveGaze = view.gazeEnabled || _worldNavigation != null;
+    if ((view.showReticle && effectiveGaze) ||
+        view.showAlignmentDivider ||
+        view.zenithRecenter) {
       child = Stack(
         fit: StackFit.expand,
         children: [
@@ -622,9 +834,13 @@ class _StereoSceneViewState extends State<StereoSceneView> {
               painter: _ReticlePainter(
                 progress: _dwellProgress,
                 zenithProgress: _zenithProgress,
-                showDivider: widget.showAlignmentDivider,
-                showReticle: widget.showReticle && effectiveGaze,
+                showDivider: view.showAlignmentDivider,
+                showReticle: view.showReticle && effectiveGaze,
                 stereoImageInset: _rig.stereoImageInset,
+                pointerRepaint: _pointerRepaint,
+                pointerPosition: () =>
+                    _input.pointerActive ? _pointerPosition : null,
+                rig: _rig,
               ),
             ),
           ),
@@ -634,6 +850,10 @@ class _StereoSceneViewState extends State<StereoSceneView> {
 
     return child;
   }
+}
+
+class _PointerRepaint extends ChangeNotifier {
+  void markDirty() => notifyListeners();
 }
 
 /// Immutable basis captured once for a system control in world space.
@@ -688,13 +908,20 @@ class _ReticlePainter extends CustomPainter {
     this.showDivider = true,
     this.showReticle = true,
     required this.stereoImageInset,
-  }) : super(repaint: Listenable.merge([progress, zenithProgress]));
+    required Listenable pointerRepaint,
+    required this.pointerPosition,
+    required this.rig,
+  }) : super(
+         repaint: Listenable.merge([progress, zenithProgress, pointerRepaint]),
+       );
 
   final ValueNotifier<double> progress;
   final ValueNotifier<double> zenithProgress;
   final bool showDivider;
   final bool showReticle;
   final double stereoImageInset;
+  final vm.Vector3? Function() pointerPosition;
+  final StereoHeadRig rig;
 
   void _drawReticle(
     Canvas canvas,
@@ -771,14 +998,27 @@ class _ReticlePainter extends CustomPainter {
     // 2. Stereoscopic Gaze Reticles
     if (showReticle) {
       final insetPixels = size.width * 0.25 * stereoImageInset;
-      final leftCenter = Offset(
+      var leftCenter = Offset(
         size.width * 0.25 + insetPixels,
         size.height * 0.5,
       );
-      final rightCenter = Offset(
+      var rightCenter = Offset(
         size.width * 0.75 - insetPixels,
         size.height * 0.5,
       );
+      final pointer = pointerPosition();
+      if (pointer != null) {
+        final eyeSize = Size(size.width / 2, size.height);
+        final left = rig
+            .eyeCamera(StereoEye.left)
+            .worldToScreen(pointer, eyeSize);
+        final right = rig
+            .eyeCamera(StereoEye.right)
+            .worldToScreen(pointer, eyeSize);
+        if (left == null || right == null) return;
+        leftCenter = left;
+        rightCenter = right + Offset(size.width / 2, 0);
+      }
       final ring = Paint()
         ..color = Colors.white.withValues(alpha: 0.7)
         ..style = PaintingStyle.stroke

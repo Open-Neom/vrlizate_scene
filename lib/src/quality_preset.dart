@@ -6,9 +6,9 @@ enum VrQualityTier { low, medium, high, ultra }
 
 /// Quality settings for GPU VR rendering, applied by `StereoSceneView`.
 ///
-/// Presets scale resolution, anti-aliasing, shadow resolution and bloom so
-/// the same scene runs at a stable frame rate on a budget phone (Moto G20
-/// class) and at full fidelity on a modern flagship.
+/// Explicit quality choices, not a guarantee of frame rate or thermal safety.
+/// Native resolution is the starting point for mid-range/flagship viewers;
+/// validate the active stereo scene on the actual phone and lenses.
 class VrQualityPreset {
   const VrQualityPreset({
     required this.tier,
@@ -44,19 +44,19 @@ class VrQualityPreset {
   /// Mid-range devices: native resolution, light FXAA, modest shadows.
   static const medium = VrQualityPreset(
     tier: VrQualityTier.medium,
-    pixelRatioScale: 0.9,
+    pixelRatioScale: 1.0,
     antiAliasing: AntiAliasingMode.fxaa,
     shadowMapResolution: 1024,
     bloomEnabled: false,
   );
 
-  /// High tier: native resolution with MSAA and bloom.
+  /// High tier: native resolution with MSAA. Bloom is opt-in (ultra).
   static const high = VrQualityPreset(
     tier: VrQualityTier.high,
     pixelRatioScale: 1.0,
     antiAliasing: AntiAliasingMode.msaa,
     shadowMapResolution: 2048,
-    bloomEnabled: true,
+    bloomEnabled: false,
   );
 
   /// Ultra tier: razor-sharp 1.15x supersampling, MSAA and HDR bloom for maximum VR lens clarity.
@@ -69,48 +69,38 @@ class VrQualityPreset {
   );
 
   static VrQualityPreset forTier(VrQualityTier tier) => switch (tier) {
-        VrQualityTier.low => low,
-        VrQualityTier.medium => medium,
-        VrQualityTier.high => high,
-        VrQualityTier.ultra => ultra,
-      };
+    VrQualityTier.low => low,
+    VrQualityTier.medium => medium,
+    VrQualityTier.high => high,
+    VrQualityTier.ultra => ultra,
+  };
 
-  /// Tier heuristic from display characteristics.
-  ///
-  /// Note: Budget phones (like Moto G20) often have 90Hz panels but low DPR (<=2.0 / 720p)
-  /// and low-end GPUs (Mali-G52). Flagships (S25 Ultra) have >=90Hz with high DPR (>=2.75 / 1080p+).
+  /// Conservative initial tier until profiling or an explicit user choice.
+  /// Display refresh rate/DPR do not measure GPU capability; a 120 Hz screen
+  /// is not evidence that two VR views can be rendered at 120 FPS.
   static VrQualityTier detectTier(BuildContext context) {
-    final view = View.of(context);
-    final refreshRate = view.display.refreshRate;
-    final dpr = view.devicePixelRatio;
-
-    // True flagships: High refresh rate AND high display density / resolution.
-    if (refreshRate >= 90 && dpr >= 2.7) return VrQualityTier.high;
-    // Mid-range: Good density at 60Hz or high refresh rate with medium density.
-    if (dpr >= 2.5 || (refreshRate >= 90 && dpr >= 2.2)) {
-      return VrQualityTier.medium;
-    }
-    // Budget tier (e.g. Moto G20 with 720p screen, DPR ~1.75-2.0).
-    return VrQualityTier.low;
+    return VrQualityTier.medium;
   }
 
   /// Resolves [preset] or auto-detects from the display when null.
-  static VrQualityPreset resolve(BuildContext context, VrQualityPreset? preset) =>
-      preset ?? forTier(detectTier(context));
+  static VrQualityPreset resolve(
+    BuildContext context,
+    VrQualityPreset? preset,
+  ) => preset ?? forTier(detectTier(context));
 
   /// The next tier down, for dynamic frame-time-based downscaling.
   VrQualityPreset get stepDown => switch (tier) {
-        VrQualityTier.ultra => high,
-        VrQualityTier.high => medium,
-        VrQualityTier.medium => low,
-        VrQualityTier.low => low,
-      };
+    VrQualityTier.ultra => high,
+    VrQualityTier.high => medium,
+    VrQualityTier.medium => low,
+    VrQualityTier.low => low,
+  };
 
   /// The next tier up, for dynamic resolution recovery when performance is stable.
   VrQualityPreset get stepUp => switch (tier) {
-        VrQualityTier.low => medium,
-        VrQualityTier.medium => high,
-        VrQualityTier.high => ultra,
-        VrQualityTier.ultra => ultra,
-      };
+    VrQualityTier.low => medium,
+    VrQualityTier.medium => high,
+    VrQualityTier.high => ultra,
+    VrQualityTier.ultra => ultra,
+  };
 }

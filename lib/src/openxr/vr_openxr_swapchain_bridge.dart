@@ -13,7 +13,8 @@ class VrOpenXrFrameTiming {
   const VrOpenXrFrameTiming({
     required this.frameIndex,
     required this.predictedDisplayTimeNs,
-    this.predictedFrameIntervalSeconds = 1.0 / 72.0, // Default 72 Hz for Meta Quest
+    this.predictedFrameIntervalSeconds =
+        1.0 / 72.0, // Default 72 Hz for Meta Quest
   });
 
   double get targetFps => 1.0 / predictedFrameIntervalSeconds;
@@ -25,7 +26,8 @@ class VrOpenXrViewPose {
   final vm.Vector3 position;
   final vm.Quaternion orientation;
 
-  /// Field of view half-angles in radians (OpenXR XrFovf).
+  /// Signed field-of-view angles in radians (OpenXR XrFovf).
+  /// A symmetric view uses negative left/down and positive right/up angles.
   final double fovLeft;
   final double fovRight;
   final double fovUp;
@@ -35,17 +37,33 @@ class VrOpenXrViewPose {
     required this.eyeIndex,
     required this.position,
     required this.orientation,
-    this.fovLeft = 0.82,  // ~47 degrees
+    this.fovLeft = -0.82,
     this.fovRight = 0.82,
-    this.fovUp = 0.78,    // ~45 degrees
-    this.fovDown = 0.78,
+    this.fovUp = 0.78, // ~45 degrees
+    this.fovDown = -0.78,
   });
 
-  /// Computes the asymmetric off-axis projection matrix required by OpenXR optics.
+  /// Computes an OpenGL-style, right-handed off-axis projection (depth -1..1).
+  /// A Vulkan renderer must adapt clip-depth and vertical conventions explicitly.
   vm.Matrix4 computeProjectionMatrix({double near = 0.05, double far = 150.0}) {
-    final left = -tan(fovLeft) * near;
+    if (!near.isFinite || !far.isFinite || near <= 0 || far <= near) {
+      throw ArgumentError(
+        'Clipping planes must be finite and satisfy 0 < near < far.',
+      );
+    }
+    for (final angle in [fovLeft, fovRight, fovUp, fovDown]) {
+      if (!angle.isFinite || angle <= -pi / 2 || angle >= pi / 2) {
+        throw ArgumentError(
+          'FOV angles must be finite and strictly between -pi/2 and pi/2.',
+        );
+      }
+    }
+    if (fovLeft == fovRight || fovDown == fovUp) {
+      throw ArgumentError('The horizontal and vertical FOV must not be zero.');
+    }
+    final left = tan(fovLeft) * near;
     final right = tan(fovRight) * near;
-    final bottom = -tan(fovDown) * near;
+    final bottom = tan(fovDown) * near;
     final top = tan(fovUp) * near;
 
     return vm.makeFrustumMatrix(left, right, bottom, top, near, far);
@@ -62,7 +80,8 @@ class VrOpenXrViewPose {
   }
 }
 
-/// Abstract contract for communicating with native OpenXR runtimes (e.g. Meta Quest 3).
+/// Experimental contract for an application-supplied OpenXR runtime.
+/// This package currently supplies simulation, not a native runtime backend.
 abstract class VrOpenXrSwapchainBridge {
   bool get isSessionRunning;
 
@@ -153,7 +172,9 @@ class VrOpenXrMockSwapchainBridge implements VrOpenXrSwapchainBridge {
       ),
       eyeIndex: eyeIndex,
       glTextureId: backend == VrGpuBackend.openGlEs ? (1000 + eyeIndex) : null,
-      vkImageHandle: backend == VrGpuBackend.vulkan ? (0xDEADBEEF0 + eyeIndex) : null,
+      vkImageHandle: backend == VrGpuBackend.vulkan
+          ? (0xDEADBEEF0 + eyeIndex)
+          : null,
       initiallyAcquired: true,
     );
   }

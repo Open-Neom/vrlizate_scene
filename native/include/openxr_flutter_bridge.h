@@ -1,9 +1,10 @@
 // ============================================================================
 // Copyright 2026 VRlizate Project. All rights reserved.
-// OpenXR External GPU Render Target & Flutter Engine Embedder Bridge
+// EXPERIMENTAL SIMULATION STUB — NOT a native OpenXR backend.
+// These declarations are not bound by VrOpenXrNativeBridge. No runtime, actual
+// swapchains, texture import, tracking or compositor submission is implemented.
 //
-// Reference implementation based on Visual Space (2026) architectural pattern
-// for Meta Quest 3 / Standalone XR devices running Flutter GPU & flutter_scene.
+// Reference interface for future platform-specific integration.
 // ============================================================================
 
 #pragma once

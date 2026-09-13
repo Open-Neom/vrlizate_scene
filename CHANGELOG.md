@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.0 — Unreleased / Sin publicar
+
+- Respect persistent connected-controller dwell suppression for scene controls
+  and system HOME; regression coverage preserves hover and fresh resume.
+- Re-export world-panel text specifications/builders for consistent readable
+  application surfaces and GPU-independent layout tests.
+- Disabling gaze discards hover, partial dwell and grace at the next input tick;
+  returning from preparation requires a fresh dwell and never calls parents
+  during widget build. System HOME remains usable when gameplay gaze is off.
+- Keep desktop touch/gamepad preview usable without starting unregistered
+  native motion-sensor plugins; mobile head tracking and temple taps remain.
+
+- Add retained core scene adapter with identity-cached GPU resources, explicit
+  unsupported-renderable diagnostics and injectable headless test resources.
+- Add validated viewer profiles/scopes, independent vehicle body yaw, optional
+  locomotion/look input and a single unhandled-temple-tap callback.
+- Keep reticles at actual hit depth even when gameplay owns dwell activation.
+- Default medium renders at native resolution; high disables bloom. Display
+  pixel density and refresh rate no longer imply a GPU performance tier.
+- Gate renderer/sensor/input startup on confirmed shader readiness, with timeout,
+  explicit retry and a readable recovery screen instead of a silent black world.
+
+- Require vrlizate 1.12.0 for shared spatial input and consumed events.
+- Integrate held input at frame cadence, correct renderer-relative axes and
+  separate gamepad sticks. Select the current remote ray, not cached head gaze.
+- HOME/recenter run before gameplay; consumed actions do not activate twice.
+  `onInteractionRay` supplies a borrowed ray for application manipulation.
+- Project the active controller reticle per eye and suppress automatic dwell
+  while pointing. World-locked controls keep their spatial placement.
+- Mark OpenXR and quad layers experimental. They do not constitute a native
+  compositor or prove zero-copy rendering. Native fallback must be explicit.
+- Fix render-loop start/dispose races, frame ownership on failures and signed
+  OpenXR FOV projection. `dispose` is asynchronous; await it for session cleanup.
+- ES: locomoción por tiempo, rayo compartido, HOME prioritario y selección única.
+  OpenXR sigue siendo infraestructura experimental; no un backend entregado.
+
 ## 0.4.0 — 2026-09-05
 
 ### Added

@@ -1,14 +1,10 @@
 import 'package:vector_math/vector_math.dart' as vm;
 
-/// Decoupled spatial 2D UI composition layer corresponding to OpenXR's `XrCompositionLayerQuad`.
+/// Experimental spatial UI descriptor for a future OpenXR quad compositor.
 ///
-/// Instead of rasterizing Flutter 2D widgets into the 3D scene every frame
-/// (which triggers full-screen scene repaints and causes blurry, filtered text),
-/// UI subtrees are rasterized to an offscreen texture once and submitted directly
-/// to the OpenXR compositor as a standalone spatial quad layer.
-///
-/// When the UI is static ([isDirty] is false), it costs **0 ms** of rendering work
-/// in the 3D stereo render loop.
+/// This class stores pose, dirty state and an application-owned texture ID. It
+/// does not rasterize Flutter widgets, import textures, handle pointer input or
+/// submit a native composition layer. No zero-cost rendering claim is implied.
 class VrSpatialUiQuadLayer {
   final String layerId;
   final int pixelWidth;
@@ -31,12 +27,12 @@ class VrSpatialUiQuadLayer {
     vm.Vector3? position,
     vm.Quaternion? orientation,
     this.textureId,
-  })  : position = position ?? vm.Vector3(0, 0, -1.5),
-        orientation = orientation ?? vm.Quaternion.identity(),
-        assert(pixelWidth > 0, 'pixelWidth must be positive'),
-        assert(pixelHeight > 0, 'pixelHeight must be positive'),
-        assert(widthMeters > 0, 'widthMeters must be positive'),
-        assert(heightMeters > 0, 'heightMeters must be positive');
+  }) : position = position ?? vm.Vector3(0, 0, -1.5),
+       orientation = orientation ?? vm.Quaternion.identity(),
+       assert(pixelWidth > 0, 'pixelWidth must be positive'),
+       assert(pixelHeight > 0, 'pixelHeight must be positive'),
+       assert(widthMeters > 0, 'widthMeters must be positive'),
+       assert(heightMeters > 0, 'heightMeters must be positive');
 
   bool get isDirty => _isDirty;
 
@@ -54,7 +50,10 @@ class VrSpatialUiQuadLayer {
   }
 
   /// Updates the 3D spatial pose of the quad in world space.
-  void setPose({required vm.Vector3 newPosition, required vm.Quaternion newOrientation}) {
+  void setPose({
+    required vm.Vector3 newPosition,
+    required vm.Quaternion newOrientation,
+  }) {
     position.setFrom(newPosition);
     orientation.setFrom(newOrientation);
   }
@@ -71,23 +70,23 @@ class VrSpatialUiQuadLayer {
   }
 
   Map<String, Object?> toOpenXrQuadDescriptor() => <String, Object?>{
-        'layerId': layerId,
-        'textureId': textureId,
-        'pixelWidth': pixelWidth,
-        'pixelHeight': pixelHeight,
-        'widthMeters': widthMeters,
-        'heightMeters': heightMeters,
-        'pose': <String, Object?>{
-          'position': <double>[position.x, position.y, position.z],
-          'orientation': <double>[
-            orientation.x,
-            orientation.y,
-            orientation.z,
-            orientation.w,
-          ],
-        },
-        'isDirty': _isDirty,
-      };
+    'layerId': layerId,
+    'textureId': textureId,
+    'pixelWidth': pixelWidth,
+    'pixelHeight': pixelHeight,
+    'widthMeters': widthMeters,
+    'heightMeters': heightMeters,
+    'pose': <String, Object?>{
+      'position': <double>[position.x, position.y, position.z],
+      'orientation': <double>[
+        orientation.x,
+        orientation.y,
+        orientation.z,
+        orientation.w,
+      ],
+    },
+    'isDirty': _isDirty,
+  };
 
   @override
   String toString() =>

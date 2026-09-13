@@ -5,19 +5,30 @@ import 'package:vrlizate_scene/vrlizate_scene.dart';
 void main() {
   group('VrQualityPreset', () {
     test('tiers are ordered by cost', () {
-      expect(VrQualityPreset.low.pixelRatioScale,
-          lessThan(VrQualityPreset.medium.pixelRatioScale));
-      expect(VrQualityPreset.low.shadowMapResolution,
-          lessThan(VrQualityPreset.high.shadowMapResolution));
-      expect(VrQualityPreset.high.bloomEnabled, isTrue);
+      expect(
+        VrQualityPreset.low.pixelRatioScale,
+        lessThan(VrQualityPreset.medium.pixelRatioScale),
+      );
+      expect(
+        VrQualityPreset.low.shadowMapResolution,
+        lessThan(VrQualityPreset.high.shadowMapResolution),
+      );
+      expect(VrQualityPreset.high.bloomEnabled, isFalse);
+      expect(VrQualityPreset.ultra.bloomEnabled, isTrue);
+      expect(VrQualityPreset.medium.pixelRatioScale, 1.0);
+      expect(VrQualityPreset.high.pixelRatioScale, 1.0);
       expect(VrQualityPreset.low.bloomEnabled, isFalse);
     });
 
     test('forTier returns the matching constant', () {
-      expect(VrQualityPreset.forTier(VrQualityTier.low),
-          same(VrQualityPreset.low));
-      expect(VrQualityPreset.forTier(VrQualityTier.high),
-          same(VrQualityPreset.high));
+      expect(
+        VrQualityPreset.forTier(VrQualityTier.low),
+        same(VrQualityPreset.low),
+      );
+      expect(
+        VrQualityPreset.forTier(VrQualityTier.high),
+        same(VrQualityPreset.high),
+      );
     });
 
     test('stepDown lowers one tier and bottoms out at low', () {

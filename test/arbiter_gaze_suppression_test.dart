@@ -4,6 +4,50 @@ import 'package:vrlizate_scene/vrlizate_scene.dart';
 
 void main() {
   group('StereoSceneView & VrInputArbiter Integration', () {
+    test('idle connected controller keeps HOME and demo dwell at zero', () {
+      var now = 0;
+      var selections = 0;
+      final arbiter = VrInputArbiter(clock: () => now);
+      final pointer = GazePointer(
+        cameraRig: CameraRig(),
+        dwellDuration: .8,
+        adaptiveDwell: false,
+        enableHaptics: false,
+        onDwellSelect: (_) => selections++,
+      );
+      pointer.update(0, 'HOME');
+      pointer.update(.7, 'HOME');
+      arbiter.setDwellSuppressed(VrInputSource.remotePhone, true);
+      for (final target in ['HOME', 'enter_demo']) {
+        for (var i = 0; i < 600; i++) {
+          now += 16667;
+          pointer.update(
+            1 / 60,
+            target,
+            dwellEnabled: !arbiter.isGazeSuppressed,
+          );
+        }
+        expect(pointer.gazeTargetId, target);
+        expect(pointer.dwellProgress, 0);
+        expect(selections, 0);
+      }
+      arbiter.setDwellSuppressed(VrInputSource.remotePhone, false);
+      now += 400000;
+      pointer.update(.1, 'enter_demo', dwellEnabled: !arbiter.isGazeSuppressed);
+      expect(
+        selections,
+        0,
+        reason: 'Resume with fresh dwell, not old progress.',
+      );
+      pointer.update(
+        .81,
+        'enter_demo',
+        dwellEnabled: !arbiter.isGazeSuppressed,
+      );
+      expect(selections, 1);
+      arbiter.pool.assertNoLeaks();
+      arbiter.dispose();
+    });
     test('suppressed dwell restarts on the same target after hysteresis', () {
       var nowUs = 1000000;
       var selections = 0;

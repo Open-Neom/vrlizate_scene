@@ -1,6 +1,7 @@
 // ============================================================================
 // Copyright 2026 VRlizate Project. All rights reserved.
-// OpenXR External GPU Render Target & Flutter Engine Embedder Bridge
+// EXPERIMENTAL SIMULATION STUB — NOT a native OpenXR backend.
+// Texture IDs and poses below are synthetic. No xr* runtime calls are made.
 // ============================================================================
 
 #include "../include/openxr_flutter_bridge.h"
@@ -128,10 +129,10 @@ bool VrOpenXr_GetPredictedViews(
     outLeftView->quatY = 0.0f;
     outLeftView->quatZ = 0.0f;
     outLeftView->quatW = 1.0f;
-    outLeftView->fovLeft = 0.82f;
+    outLeftView->fovLeft = -0.82f;
     outLeftView->fovRight = 0.82f;
     outLeftView->fovUp = 0.78f;
-    outLeftView->fovDown = 0.78f;
+    outLeftView->fovDown = -0.78f;
 
     // Right eye pose
     outRightView->eyeIndex = 1;
@@ -142,10 +143,10 @@ bool VrOpenXr_GetPredictedViews(
     outRightView->quatY = 0.0f;
     outRightView->quatZ = 0.0f;
     outRightView->quatW = 1.0f;
-    outRightView->fovLeft = 0.82f;
+    outRightView->fovLeft = -0.82f;
     outRightView->fovRight = 0.82f;
     outRightView->fovUp = 0.78f;
-    outRightView->fovDown = 0.78f;
+    outRightView->fovDown = -0.78f;
 
     return true;
 }

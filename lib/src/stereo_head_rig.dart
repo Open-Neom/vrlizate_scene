@@ -33,6 +33,10 @@ class StereoHeadRig implements RotationTarget {
   /// The underlying vrlizate camera rig (position, rotation, IPD, FOV).
   final CameraRig cameraRig;
 
+  /// Vehicle/platform heading independent of the viewer's local head pose.
+  /// Recentring the head must not rotate the car or reset its world heading.
+  double bodyYaw = 0;
+
   /// Distance in meters of the zero-parallax plane, before image-center inset.
   ///
   /// Both cameras remain parallel. An asymmetric projection aligns content at
@@ -81,19 +85,33 @@ class StereoHeadRig implements RotationTarget {
   set eyeCenter(vm.Vector3 value) => cameraRig.position = value;
 
   /// World-space head orientation quaternion.
-  vm.Quaternion get orientation => cameraRig.headTransform.rotation;
+  vm.Quaternion get orientation {
+    if (bodyYaw == 0) return cameraRig.headTransform.rotation;
+    final yaw = vm.Quaternion.axisAngle(
+      vm.Vector3(0, 1, 0),
+      cameraRig.yaw + bodyYaw,
+    );
+    final pitch = vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), cameraRig.pitch);
+    return (pitch * yaw)..normalize();
+  }
 
   /// World-space gaze direction (−Z head axis, rotated).
-  vm.Vector3 get forward => cameraRig.headTransform.forward;
+  vm.Vector3 get forward => bodyYaw == 0
+      ? cameraRig.headTransform.forward
+      : orientation.rotated(vm.Vector3(0, 0, -1));
 
   /// World-space local +X direction of the underlying vrlizate rig.
   ///
   /// This differs from [screenRight] because flutter_scene's view convention
   /// uses `up.cross(forward)` for its horizontal camera axis.
-  vm.Vector3 get right => cameraRig.headTransform.right;
+  vm.Vector3 get right => bodyYaw == 0
+      ? cameraRig.headTransform.right
+      : orientation.rotated(vm.Vector3(1, 0, 0));
 
   /// World-space head-up direction.
-  vm.Vector3 get up => cameraRig.headTransform.up;
+  vm.Vector3 get up => bodyYaw == 0
+      ? cameraRig.headTransform.up
+      : orientation.rotated(vm.Vector3(0, 1, 0));
 
   /// World direction that projects toward the right edge of an eye viewport.
   vm.Vector3 get screenRight => up.cross(forward)..normalize();

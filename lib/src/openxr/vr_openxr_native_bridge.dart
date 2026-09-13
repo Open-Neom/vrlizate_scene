@@ -1,48 +1,35 @@
-import 'dart:ffi';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart';
-
 import 'vr_gpu_external_render_target.dart';
 import 'vr_openxr_swapchain_bridge.dart';
 
-/// Dart FFI bindings to the native `openxr_flutter_bridge` shared library.
+/// Experimental placeholder for future native OpenXR bindings.
 ///
-/// If running on Meta Quest 3 / Android with the native OpenXR embedder library loaded,
-/// calls are routed directly to hardware swapchains. Otherwise, delegates safely
-/// to [fallbackBridge].
+/// No FFI calls or runtime integration are implemented. Initialization fails
+/// closed unless the caller explicitly supplies a fallback or opts into the
+/// mock. Simulation must never be reported as headset/native availability.
 class VrOpenXrNativeBridge implements VrOpenXrSwapchainBridge {
   final VrOpenXrSwapchainBridge fallbackBridge;
   final String libraryName;
 
-  DynamicLibrary? _dylib;
-  bool _isNativeLoaded = false;
+  final bool _fallbackEnabled;
   bool _sessionRunning = false;
 
   VrOpenXrNativeBridge({
     this.libraryName = 'openxr_flutter_bridge',
     VrOpenXrSwapchainBridge? fallback,
-  }) : fallbackBridge = fallback ?? VrOpenXrMockSwapchainBridge();
+    bool allowMockFallback = false,
+  }) : fallbackBridge = fallback ?? VrOpenXrMockSwapchainBridge(),
+       _fallbackEnabled = fallback != null || allowMockFallback;
 
-  DynamicLibrary? get dylib => _dylib;
-  bool get isNativeLoaded => _isNativeLoaded;
+  /// Always null until actual native bindings exist.
+  Object? get dylib => null;
+  bool get isNativeLoaded => false;
 
   @override
   bool get isSessionRunning => _sessionRunning;
 
   @override
   Future<bool> initializeSession() async {
-    if (!kIsWeb && (Platform.isAndroid || Platform.isLinux || Platform.isWindows)) {
-      try {
-        _dylib = Platform.isAndroid
-            ? DynamicLibrary.open('lib$libraryName.so')
-            : DynamicLibrary.process();
-        _isNativeLoaded = true;
-      } catch (e) {
-        debugPrint('[VrOpenXrNativeBridge] Native library "$libraryName" not found. Using fallback bridge: $e');
-        _isNativeLoaded = false;
-      }
-    }
-
+    if (!_fallbackEnabled) return false;
     _sessionRunning = await fallbackBridge.initializeSession();
     return _sessionRunning;
   }
@@ -55,22 +42,29 @@ class VrOpenXrNativeBridge implements VrOpenXrSwapchainBridge {
 
   @override
   VrOpenXrFrameTiming waitFrame() {
+    _ensureSession();
     return fallbackBridge.waitFrame();
   }
 
   @override
   void beginFrame(int frameIndex) {
+    _ensureSession();
     fallbackBridge.beginFrame(frameIndex);
   }
 
   @override
   VrGpuExternalRenderTarget acquireSwapchainImage(int eyeIndex) {
+    _ensureSession();
     return fallbackBridge.acquireSwapchainImage(eyeIndex);
   }
 
   @override
   void releaseSwapchainImage(int eyeIndex, {int? syncFenceHandle}) {
-    fallbackBridge.releaseSwapchainImage(eyeIndex, syncFenceHandle: syncFenceHandle);
+    _ensureSession();
+    fallbackBridge.releaseSwapchainImage(
+      eyeIndex,
+      syncFenceHandle: syncFenceHandle,
+    );
   }
 
   @override
@@ -79,11 +73,21 @@ class VrOpenXrNativeBridge implements VrOpenXrSwapchainBridge {
     List<VrGpuExternalRenderTarget> targets, {
     List<dynamic>? quadLayers,
   }) {
+    _ensureSession();
     fallbackBridge.endFrame(frameIndex, targets, quadLayers: quadLayers);
   }
 
   @override
   List<VrOpenXrViewPose> getPredictedViews(int predictedDisplayTimeNs) {
+    _ensureSession();
     return fallbackBridge.getPredictedViews(predictedDisplayTimeNs);
+  }
+
+  void _ensureSession() {
+    if (!_sessionRunning) {
+      throw StateError(
+        'Native OpenXR is unavailable; explicitly initialize a supplied fallback to simulate.',
+      );
+    }
   }
 }
