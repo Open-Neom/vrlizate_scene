@@ -32,20 +32,37 @@ class VrQualityPreset {
   /// Whether HDR bloom post-processing runs.
   final bool bloomEnabled;
 
-  /// Budget devices (Mali-G52, Unisoc, entry/mid 720p 90Hz panels): stability first.
+  /// Budget devices (Mali-G52/G57, Unisoc, entry/mid panels): stability first.
+  ///
+  /// 0.6× native renders ~36% of the pixels of [medium]. Through Cardboard
+  /// lenses the eye sees a magnified quarter-screen, so the loss is mostly in
+  /// the blurred periphery; a measured raster time of 9–13× the 60 Hz budget
+  /// on a Dimensity 720 (see docs/STABILIZATION_2026-09-12.md) showed 0.75×
+  /// was not a stability floor. Dynamic scaling lands here after [medium].
   static const low = VrQualityPreset(
     tier: VrQualityTier.low,
-    pixelRatioScale: 0.75,
+    pixelRatioScale: 0.6,
     antiAliasing: AntiAliasingMode.none,
     shadowMapResolution: 512,
     bloomEnabled: false,
   );
 
-  /// Mid-range devices: native resolution, light FXAA, modest shadows.
+  /// Mid-range devices: native resolution, MSAA where the backend has it
+  /// (FXAA otherwise), modest shadows.
+  ///
+  /// [AntiAliasingMode.auto] resolves to 4× MSAA on Impeller's Metal/Vulkan
+  /// backends, where flutter_scene allocates the multisample color target as
+  /// `deviceTransient` — it lives in tile memory and never round-trips to
+  /// RAM, so on mobile it costs coverage, not bandwidth. FXAA, by contrast,
+  /// is a full-screen post pass that softens every high-contrast edge,
+  /// label text included: exactly the definition a stereo lens magnifies
+  /// the loss of. The 2026-09-12 profile put the raster cost in per-pixel
+  /// shading, which MSAA does not multiply. Needs device validation on the
+  /// Dimensity/Mali tier; revert to `fxaa` here if it regresses.
   static const medium = VrQualityPreset(
     tier: VrQualityTier.medium,
     pixelRatioScale: 1.0,
-    antiAliasing: AntiAliasingMode.fxaa,
+    antiAliasing: AntiAliasingMode.auto,
     shadowMapResolution: 1024,
     bloomEnabled: false,
   );

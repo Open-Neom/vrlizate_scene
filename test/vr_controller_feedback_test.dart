@@ -347,28 +347,134 @@ void main() {
   );
 
   test(
+    'action captions re-rasterize the label atlas only when they change',
+    () async {
+      final fixture = _Fixture();
+      final visual = fixture.create();
+      await visual.ready;
+      expect(
+        fixture.artworks.length,
+        1,
+        reason: 'initial atlas without captions',
+      );
+
+      // Same experience, many packets: no new atlas.
+      for (var i = 0; i < 5; i++) {
+        visual.setState(
+          VrControllerFeedbackState(
+            connected: true,
+            btnA: i.isEven,
+            actions: const {'A': 'Disparar', 'X': 'Cambiar arma'},
+          ),
+        );
+      }
+      await visual.artworkPending;
+      expect(
+        fixture.artworks.length,
+        2,
+        reason: 'one atlas for the new actions',
+      );
+      expect(
+        visual.root.children.where((n) => n.name.endsWith('labels')).length,
+        1,
+        reason: 'the previous label node is replaced, never stacked',
+      );
+
+      // A different experience → one more atlas.
+      visual.setState(
+        const VrControllerFeedbackState(
+          connected: true,
+          actions: {'A': 'Golpear', 'GRIP': 'Magnesis'},
+        ),
+      );
+      await visual.artworkPending;
+      expect(fixture.artworks.length, 3);
+      expect(
+        visual.root.children.where((n) => n.name.endsWith('labels')).length,
+        1,
+      );
+      visual.dispose();
+    },
+  );
+
+  test(
+    'action captions paint under their keys and truncate long text',
+    () async {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final fixture = _Fixture();
+      final visual = fixture.create();
+      await visual.ready;
+      visual.setState(
+        const VrControllerFeedbackState(
+          connected: true,
+          actions: {
+            'X': 'Cambiar arma',
+            'Y': 'Una etiqueta demasiado larga para caber',
+            'GRIP': 'Puerta',
+          },
+        ),
+      );
+      await visual.artworkPending;
+      // The paint callback must run without throwing for an oversized caption
+      // and must reference the same atlas dimensions as the base artwork.
+      final surface = fixture.artworks.last;
+      expect(surface.widthPixels, 1024);
+      expect(surface.heightPixels, 448);
+      surface.paint(canvas, const Size(1024, 448));
+      recorder.endRecording().dispose();
+      visual.dispose();
+    },
+  );
+
+  test('feedback state equality includes the action map', () {
+    const a = VrControllerFeedbackState(actions: {'A': 'Disparar'});
+    const b = VrControllerFeedbackState(actions: {'A': 'Disparar'});
+    const c = VrControllerFeedbackState(actions: {'A': 'Golpear'});
+    expect(a, equals(b));
+    expect(a.hashCode, b.hashCode);
+    expect(a, isNot(equals(c)));
+    expect(const VrControllerFeedbackState(), isNot(equals(a)));
+  });
+
+  test(
     'gaze angle from feet calculates correct angles (0° at feet/nadir, 90° at horizon)',
     () {
       final rig = StereoHeadRig();
       // At horizon (pitch = 0 rad), angle from feet is 90°
       rig.setOrientation(0.0, 0.0);
-      expect(VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig), closeTo(90.0, 1e-4));
+      expect(
+        VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig),
+        closeTo(90.0, 1e-4),
+      );
 
       // Looking down 70° (pitch = 70 * pi / 180 ≈ 1.2217 rad), angle from feet is 20°
       rig.setPitch(70.0 * math.pi / 180.0);
-      expect(VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig), closeTo(20.0, 1e-4));
+      expect(
+        VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig),
+        closeTo(20.0, 1e-4),
+      );
 
       // Looking down 60° (pitch = 60 * pi / 180 ≈ 1.0472 rad), angle from feet is 30°
       rig.setPitch(60.0 * math.pi / 180.0);
-      expect(VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig), closeTo(30.0, 1e-4));
+      expect(
+        VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig),
+        closeTo(30.0, 1e-4),
+      );
 
       // Looking straight down at feet (pitch = 90° = pi / 2, clamped to 1.45 rad ≈ 83.08° in CameraRig)
       rig.setPitch(1.45);
-      expect(VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig), closeTo(90.0 - 83.0784, 0.01));
+      expect(
+        VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig),
+        closeTo(90.0 - 83.0784, 0.01),
+      );
 
       // Looking up at sky (pitch = -30° = -pi / 6), angle from feet is 120°
       rig.setPitch(-30.0 * math.pi / 180.0);
-      expect(VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig), closeTo(120.0, 1e-4));
+      expect(
+        VrControllerFeedbackVisuals.gazeAngleFromFeetDeg(rig),
+        closeTo(120.0, 1e-4),
+      );
     },
   );
 
@@ -386,7 +492,11 @@ void main() {
       // 1. Looking at horizon (pitch = 0.0, 90° from feet) -> MUST BE HIDDEN
       rig.setOrientation(0.0, 0.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must be hidden at horizon (90° from feet)');
+      expect(
+        visual.root.visible,
+        isFalse,
+        reason: 'Must be hidden at horizon (90° from feet)',
+      );
 
       // 2. Looking up at sky (pitch = -30°, 120° from feet) -> MUST BE HIDDEN
       rig.setPitch(-30.0 * math.pi / 180.0);
@@ -396,43 +506,77 @@ void main() {
       // 3. Looking slightly down (pitch = 30°, 60° from feet) -> MUST BE HIDDEN
       rig.setPitch(30.0 * math.pi / 180.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must be hidden looking slightly down (60° from feet)');
+      expect(
+        visual.root.visible,
+        isFalse,
+        reason: 'Must be hidden looking slightly down (60° from feet)',
+      );
 
       // 4. Looking down at ~20° from feet (pitch = 70° = 1.2217 rad) -> MUST BE VISIBLE!
       rig.setPitch(70.0 * math.pi / 180.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isTrue, reason: 'Must be visible at 20° from feet');
+      expect(
+        visual.root.visible,
+        isTrue,
+        reason: 'Must be visible at 20° from feet',
+      );
 
       // 5. Looking down at 30° from feet (pitch = 60°, within 20° ± 15°) -> VISIBLE
       rig.setPitch(60.0 * math.pi / 180.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isTrue, reason: 'Must be visible at 30° from feet (within tolerance)');
+      expect(
+        visual.root.visible,
+        isTrue,
+        reason: 'Must be visible at 30° from feet (within tolerance)',
+      );
 
       // 6. Looking down at 10° from feet (pitch = 80°, within 20° ± 15°) -> VISIBLE
       rig.setPitch(80.0 * math.pi / 180.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isTrue, reason: 'Must be visible at 10° from feet (within tolerance)');
+      expect(
+        visual.root.visible,
+        isTrue,
+        reason: 'Must be visible at 10° from feet (within tolerance)',
+      );
 
       // 7. Looking down at 40° from feet (pitch = 50°, outside 20° ± 15°) -> HIDDEN
       rig.setPitch(50.0 * math.pi / 180.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must be hidden at 40° from feet (outside tolerance)');
+      expect(
+        visual.root.visible,
+        isFalse,
+        reason: 'Must be hidden at 40° from feet (outside tolerance)',
+      );
 
       // 8. Returning gaze to horizon -> HIDES IMMEDIATELY
       rig.setPitch(0.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must hide when looking back up at horizon');
+      expect(
+        visual.root.visible,
+        isFalse,
+        reason: 'Must hide when looking back up at horizon',
+      );
 
       // 9. When disconnected, stays hidden even at 20° gaze
       visual.setState(const VrControllerFeedbackState(connected: false));
       rig.setPitch(70.0 * math.pi / 180.0);
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must not show if disconnected');
+      expect(
+        visual.root.visible,
+        isFalse,
+        reason: 'Must not show if disconnected',
+      );
 
       // 10. When visible flag is false, stays hidden even at 20° gaze
-      visual.setState(const VrControllerFeedbackState(connected: true, visible: false));
+      visual.setState(
+        const VrControllerFeedbackState(connected: true, visible: false),
+      );
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must not show if visible is false');
+      expect(
+        visual.root.visible,
+        isFalse,
+        reason: 'Must not show if visible is false',
+      );
 
       visual.dispose();
     },

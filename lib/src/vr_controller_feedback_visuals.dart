@@ -145,10 +145,10 @@ class VrControllerFeedbackVisuals {
       _material(const Color(0xFFF45364)),
     );
     parent.add(root);
+    _createSurface =
+        artworkBuilder ?? const VrRetainedGpuResources().createSurface;
     setState(const VrControllerFeedbackState());
-    ready = _loadArtwork(
-      artworkBuilder ?? const VrRetainedGpuResources().createSurface,
-    );
+    ready = _loadArtwork(const {});
   }
 
   static const nodePrefix = '__vrlizate_controller_feedback_';
@@ -162,10 +162,11 @@ class VrControllerFeedbackVisuals {
   /// Angular tolerance window around [targetGazeAngleFromFeetDeg] (±15°).
   static const double defaultGazeAngleToleranceDeg = 15.0;
 
-  /// Converts camera rig pitch to degrees from feet (0° = feet/nadir, 90° = horizon).
-  /// In CameraRig, positive pitch angles look down.
+  /// Converts the rig's composed pitch (tracked head plus any look-stick
+  /// offset) to degrees from feet (0° = feet/nadir, 90° = horizon). In
+  /// CameraRig, positive pitch angles look down.
   static double gazeAngleFromFeetDeg(StereoHeadRig rig) {
-    final pitchDeg = rig.cameraRig.pitch * 180.0 / math.pi;
+    final pitchDeg = rig.pitch * 180.0 / math.pi;
     return 90.0 - pitchDeg;
   }
 
@@ -207,6 +208,15 @@ class VrControllerFeedbackVisuals {
   Geometry? _box, _sphere;
   VrControllerFeedbackState? _state;
   bool _disposed = false;
+  late final Future<Mesh?> Function(VrRetainedSurface surface) _createSurface;
+  Node? _labelsNode;
+  Map<String, String> _labelsActions = const {};
+  int _artworkGeneration = 0;
+
+  /// Completes when the label atlas for the current actions is in the scene.
+  /// Exposed for tests; production code awaits [ready] once.
+  Future<void>? get artworkPending => _artworkPending;
+  Future<void>? _artworkPending;
 
   Mesh _gpuMesh(UnlitMaterial material, {required bool round}) => Mesh(
     round
@@ -223,26 +233,38 @@ class VrControllerFeedbackVisuals {
     ..vertexColorWeight = 0
     ..baseColorFactor.setValues(color.r, color.g, color.b, 1);
 
-  Future<void> _loadArtwork(
-    Future<Mesh?> Function(VrRetainedSurface) create,
-  ) async {
-    final mesh = await create(
-      const VrRetainedSurface(
-        widthPixels: 1024,
-        heightPixels: 448,
-        worldWidth: .8,
-        worldHeight: .35,
-        paint: _paintArtwork,
-      ),
-    );
-    if (_disposed) return;
-    root.add(
-      _nonInteractive(Node(name: '${nodePrefix}labels', mesh: mesh))
-        ..position = vm.Vector3(0, 0, .086),
-    );
+  Future<void> _loadArtwork(Map<String, String> actions) {
+    final generation = ++_artworkGeneration;
+    _labelsActions = Map.unmodifiable(actions);
+    final captions = _labelsActions;
+    final future = () async {
+      final mesh = await _createSurface(
+        VrRetainedSurface(
+          widthPixels: 1024,
+          heightPixels: 448,
+          worldWidth: .8,
+          worldHeight: .35,
+          paint: (canvas, size) => _paintArtwork(canvas, size, captions),
+        ),
+      );
+      // A newer atlas superseded this one while it rasterized.
+      if (_disposed || generation != _artworkGeneration) return;
+      final previous = _labelsNode;
+      if (previous != null) root.remove(previous);
+      _labelsNode = _nonInteractive(
+        Node(name: '${nodePrefix}labels', mesh: mesh),
+      )..position = vm.Vector3(0, 0, .086);
+      root.add(_labelsNode!);
+    }();
+    _artworkPending = future;
+    return future;
   }
 
-  static void _paintArtwork(Canvas canvas, Size size) {
+  static void _paintArtwork(
+    Canvas canvas,
+    Size size,
+    Map<String, String> actions,
+  ) {
     void label(
       String text,
       double x,
@@ -271,10 +293,24 @@ class VrControllerFeedbackVisuals {
       painter.dispose();
     }
 
+    String? caption(String key) {
+      final text = actions[key]?.trim();
+      if (text == null || text.isEmpty) return null;
+      final max = VrControllerFeedbackState.maxActionLength;
+      return text.length <= max ? text : '${text.substring(0, max - 1)}…';
+    }
+
+    const captionColor = Color(0xFFBFE9F7);
     for (final key in _buttons) {
       label(key.$1, key.$2, key.$3, 46);
+      final text = caption(key.$1);
+      // Under the key, inside the row gap (rows are 0.12 m apart, keys 0.06).
+      if (text != null)
+        label(text, key.$2, key.$3 - .041, 13, color: captionColor);
     }
     label('GRIP', 0, .093, 20);
+    final grip = caption('GRIP');
+    if (grip != null) label(grip, 0, .066, 13, color: captionColor);
     label('MANDO', 0, .143, 18, color: const Color(0xFF72BBDB));
     label('FRENO', .055, -.131, 13);
     label('GAS', -.055, -.131, 13);
@@ -287,7 +323,13 @@ class VrControllerFeedbackVisuals {
 
   void setState(VrControllerFeedbackState state) {
     if (_disposed || state == _state) return;
+    final previous = _state;
     _state = state;
+    // Captions are static per experience; rasterize a new atlas only when the
+    // experience (and so its action map) actually changes.
+    if (previous != null && !mapEquals(state.actions, _labelsActions)) {
+      _loadArtwork(state.actions);
+    }
     if (!state.shown) {
       root.visible = false;
       return;

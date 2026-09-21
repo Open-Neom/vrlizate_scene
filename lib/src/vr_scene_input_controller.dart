@@ -117,7 +117,14 @@ class VrSceneInputController {
     // Avoid a large teleport after a paused/resumed frame.
     final step = dt.clamp(0.0, 0.1);
     if (lookInputEnabled && (state.lookX != 0 || state.lookY != 0)) {
-      rig.rotate(-state.lookX * 1.8 * step, -state.lookY * 1.5 * step);
+      // Yaw is relative in the tracker, so the head rig keeps it. Pitch is
+      // absolute (gravity-referenced) there and would erase a stick delta on
+      // the next sample; accumulate it as a composed body offset instead.
+      rig.rotate(-state.lookX * 1.8 * step, 0);
+      rig.bodyPitch = (rig.bodyPitch - state.lookY * 1.5 * step).clamp(
+        -1.45,
+        1.45,
+      );
     }
     if (!locomotionEnabled || (state.moveX == 0 && state.moveY == 0)) return;
     state.writeMovement(

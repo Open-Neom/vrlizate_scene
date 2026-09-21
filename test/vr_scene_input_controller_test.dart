@@ -218,9 +218,50 @@ void main() {
       expect(rig.eyeCenter, position);
       expect(rig.forward.dot(rig.screenRight), closeTo(0, .0001));
       expect(rig.cameraRig.yaw, lessThan(0));
-      expect(rig.cameraRig.pitch, lessThan(0));
+      // Stick pitch is a composed body offset: the tracker's absolute head
+      // pitch must not be able to erase it on the next sensor sample.
+      expect(rig.cameraRig.pitch, 0);
+      expect(rig.bodyPitch, lessThan(0));
+      expect(rig.pitch, lessThan(0));
+      expect(rig.forward.y, greaterThan(0), reason: 'stick up looks up');
     },
   );
+
+  test('look-stick pitch survives absolute tracker pitch updates', () {
+    final rig = StereoHeadRig();
+    final input = VrSceneInputController(
+      rig: rig,
+      pick: (_) => null,
+      activate: (_) {},
+      recenter: () {},
+    );
+    input.handleEvent(
+      VrInputEvent(
+        type: VrInputType.navigate,
+        source: VrInputSource.remotePhone,
+        data: {'x': 0.0, 'y': 0.0, 'lookX': 0.0, 'lookY': 1.0},
+      ),
+    );
+    input.update(.1);
+    final offset = rig.bodyPitch;
+    expect(offset, lessThan(0));
+    // The HeadTracker writes gravity-referenced pitch every sample.
+    rig.setPitch(0.3);
+    expect(rig.bodyPitch, offset);
+    expect(rig.pitch, closeTo(0.3 + offset, 1e-9));
+    // Recentering the head keeps the manual offset, like bodyYaw.
+    rig.recenter();
+    expect(rig.bodyPitch, offset);
+    // The composed pitch never leaves the rig's clamp even with wind-up.
+    for (var i = 0; i < 200; i++) {
+      input.update(.1);
+    }
+    expect(rig.bodyPitch, greaterThanOrEqualTo(-1.45));
+    rig.setPitch(-1.45);
+    expect(rig.pitch, greaterThanOrEqualTo(-1.45));
+    expect(rig.forward.length, closeTo(1, 1e-6));
+    expect(rig.right.y, closeTo(0, 1e-6), reason: 'no roll');
+  });
 
   test('recenter clears remote state and preserves world position', () {
     final rig = StereoHeadRig(eyeCenter: vm.Vector3(1, 2, 3))..rotate(1, 0);

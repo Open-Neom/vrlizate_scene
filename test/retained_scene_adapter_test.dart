@@ -61,6 +61,25 @@ class RecordingResources extends VrRetainedResourceFactory {
   }
 }
 
+/// Recording factory that hands out real (unbound) GPU materials so texture
+/// binding can be observed without a GPU.
+class TexturingResources extends RecordingResources {
+  final List<core.VRTexture> textureUploads = [];
+  final List<ui.Image> uploadedImages = [];
+
+  @override
+  fs.Material? createMaterial({required bool unlit}) {
+    materials++;
+    return unlit ? fs.UnlitMaterial() : fs.PhysicallyBasedMaterial();
+  }
+
+  @override
+  Future<fs.Texture2D?> createTexture(ui.Image image, {bool normal = false}) {
+    uploadedImages.add(image);
+    return Future<fs.Texture2D?>.value(null);
+  }
+}
+
 class UnknownRenderable extends core.Node {
   @override
   bool get isRenderable => true;
@@ -425,7 +444,7 @@ void main() {
         ),
         core.MeshNode(
           geometry: core.CubeGeometry(),
-          material: core.VRMaterial(map: core.VRTexture()),
+          material: core.PBRMaterial(emissionMap: core.VRTexture()),
         ),
       ]) {
         final source = core.Scene()..add(node);
@@ -436,6 +455,126 @@ void main() {
         expect(() => adapter.sync(), throwsUnsupportedError);
         adapter.dispose();
       }
+    },
+  );
+
+  test(
+    'a legacy map still loading is bound by the sync after it lands',
+    () async {
+      final map = core.VRTexture(name: 'late');
+      final source = core.Scene()
+        ..add(
+          core.MeshNode(
+            geometry: core.CubeGeometry(),
+            material: core.VRMaterial(map: map),
+          ),
+        );
+      final resources = TexturingResources();
+      final adapter = VrRetainedSceneAdapter(
+        source: source,
+        resources: resources,
+      );
+      adapter.sync();
+      expect(adapter.pendingSurfaceCount, 0);
+      expect(resources.uploadedImages, isEmpty);
+      await map.fromColor(const ui.Color(0xFF3060A0));
+      adapter.sync();
+      expect(adapter.pendingSurfaceCount, 1);
+      await adapter.pendingTextures;
+      expect(resources.uploadedImages, [map.image]);
+      adapter.dispose();
+    },
+  );
+
+  test('loaded color, normal and metallic-roughness maps bind once', () async {
+    final color = core.VRTexture(name: 'color');
+    await color.fromColor(const ui.Color(0xFF8040C0));
+    final normal = core.VRTexture(name: 'normal');
+    await normal.fromColor(const ui.Color(0xFF8080FF));
+    final mr = core.VRTexture(name: 'mr');
+    await mr.fromColor(const ui.Color(0xFF00C000));
+    final material = core.PBRMaterial(
+      colorMap: color,
+      normalMap: normal,
+      normalScale: 0.6,
+      metallicRoughnessMap: mr,
+    );
+    final source = core.Scene()
+      ..add(core.MeshNode(geometry: core.CubeGeometry(), material: material))
+      ..add(core.MeshNode(geometry: core.CubeGeometry(), material: material));
+    final resources = TexturingResources();
+    final adapter = VrRetainedSceneAdapter(
+      source: source,
+      resources: resources,
+    );
+    adapter.sync();
+    // One binding job per material, shared by both meshes.
+    expect(adapter.pendingSurfaceCount, 1);
+    await adapter.pendingTextures;
+    expect(adapter.pendingSurfaceCount, 0);
+    expect(resources.uploadedImages, [color.image, normal.image, mr.image]);
+    // A second sync with the same maps queues nothing and uploads nothing.
+    adapter.sync();
+    expect(adapter.pendingSurfaceCount, 0);
+    expect(resources.uploadedImages.length, 3);
+    // Swapping a map re-binds and uploads only the new texture.
+    final other = core.VRTexture(name: 'other');
+    await other.fromColor(const ui.Color(0xFF202020));
+    material.colorMap = other;
+    adapter.sync();
+    expect(adapter.pendingSurfaceCount, 1);
+    await adapter.pendingTextures;
+    expect(resources.uploadedImages.length, 4);
+    expect(resources.uploadedImages.last, other.image);
+    adapter.dispose();
+  });
+
+  test('a default dome is opt-in and follows the background color', () {
+    final source = core.Scene()..backgroundColor = const ui.Color(0xFF204060);
+    final resources = _SkyRecorder();
+    final adapter = VrRetainedSceneAdapter(
+      source: source,
+      resources: resources,
+    );
+    adapter.sync();
+    // No sky defined and no default asked for: nothing is set (null is the
+    // initial state, so the first sync need not touch it).
+    expect(resources.skies.whereType<VrRetainedSkyDome>(), isEmpty);
+    adapter.defaultSkyDome = true;
+    adapter.sync();
+    final dome = resources.skies.last!;
+    expect(dome.horizon.y, greaterThan(dome.zenith.y));
+    expect(dome.horizon.y, greaterThan(dome.ground.y));
+    adapter.dispose();
+  });
+
+  test(
+    'the first directional light casts shadows when a resolution is set',
+    () {
+      final a = core.Light.directional(intensity: 2);
+      final b = core.Light.directional(intensity: 1);
+      final source = core.Scene()
+        ..add(a)
+        ..add(b);
+      final adapter = VrRetainedSceneAdapter(
+        source: source,
+        resources: VrRetainedResourceFactory.headless(),
+      )..shadowMapResolution = 2048;
+      adapter.sync();
+      final lights = [
+        for (final light in [a, b])
+          adapter
+              .sceneNodeFor(light)!
+              .getComponent<fs.DirectionalLightComponent>()!
+              .light,
+      ];
+      expect(lights.length, 2);
+      expect(lights.where((l) => l.castsShadow).length, 1);
+      expect(lights.firstWhere((l) => l.castsShadow).shadowMapResolution, 2048);
+      adapter.shadowMapResolution = null;
+      adapter.sync();
+      expect(lights.every((l) => !l.castsShadow), isTrue);
+      adapter.dispose();
     },
   );
 
@@ -463,4 +602,14 @@ void main() {
     expect(() => adapter.scene, throwsStateError);
     adapter.dispose();
   });
+}
+
+class _SkyRecorder extends RecordingResources {
+  final List<VrRetainedSkyDome?> skies = [];
+
+  @override
+  bool setSky(fs.Scene? scene, VrRetainedSkyDome? sky) {
+    skies.add(sky);
+    return true;
+  }
 }

@@ -20,8 +20,61 @@ abstract class VrRetainedResourceFactory {
   fs.Geometry? createGeometry(core.Geometry geometry, {bool wireframe = false});
   fs.Material? createMaterial({required bool unlit});
   void updateMaterial(fs.Material? target, core.VRMaterial source);
+
+  /// Uploads a loaded legacy texture. [normal] marks a tangent-space normal
+  /// map (linear data); every other map is sRGB color. Null when the
+  /// factory has no GPU.
+  Future<fs.Texture2D?> createTexture(ui.Image image, {bool normal = false}) =>
+      Future<fs.Texture2D?>.value(null);
   Future<fs.Mesh?> createSurface(VrRetainedSurface surface);
   void setAmbient(fs.Scene? scene, vm.Vector3 radiance);
+
+  /// Two-color hemisphere ambient: [sky] lights upward-facing surfaces,
+  /// [ground] lights downward-facing ones, blended by the world normal's Y.
+  /// The default folds both into a flat average for renderers without a
+  /// directional ambient term; the GPU factory encodes them as L0+L1
+  /// spherical harmonics, which the standard shader already evaluates, so
+  /// the sky/ground split costs no extra pass.
+  void setHemisphereAmbient(
+    fs.Scene? scene,
+    vm.Vector3 sky,
+    vm.Vector3 ground,
+  ) {
+    setAmbient(scene, (sky + ground)..scale(0.5));
+  }
+
+  /// Installs or clears a world-locked gradient sky dome. Returns whether the
+  /// request was applied; a GPU factory may defer until shaders are ready.
+  /// The default (headless) implementation applies nothing and reports true.
+  bool setSky(fs.Scene? scene, VrRetainedSkyDome? sky) => true;
+
+  /// Whether the last ambient install was complete. A GPU factory reports
+  /// false while it had to fall back to a black specular environment
+  /// (shaders not ready yet); the adapter then re-installs on a later sync.
+  bool get environmentReady => true;
+}
+
+/// Linear-RGB colors of a three-stop gradient sky dome.
+class VrRetainedSkyDome {
+  const VrRetainedSkyDome({
+    required this.zenith,
+    required this.horizon,
+    required this.ground,
+  });
+
+  final vm.Vector3 zenith;
+  final vm.Vector3 horizon;
+  final vm.Vector3 ground;
+
+  @override
+  bool operator ==(Object other) =>
+      other is VrRetainedSkyDome &&
+      other.zenith == zenith &&
+      other.horizon == horizon &&
+      other.ground == ground;
+
+  @override
+  int get hashCode => Object.hash(zenith, horizon, ground);
 }
 
 /// Immutable, bounded UI raster request. Only the panel/label is rasterized;
@@ -142,6 +195,14 @@ class VrRetainedGpuResources extends VrRetainedResourceFactory {
   }
 
   @override
+  Future<fs.Texture2D?> createTexture(ui.Image image, {bool normal = false}) =>
+      fs.Texture2D.fromImage(
+        image,
+        content: normal ? fs.TextureContent.normal : fs.TextureContent.color,
+        sampling: const fs.TextureSampling(maxAnisotropy: 4),
+      );
+
+  @override
   Future<fs.Mesh> createSurface(VrRetainedSurface surface) async {
     final recorder = ui.PictureRecorder();
     surface.paint(
@@ -168,7 +229,122 @@ class VrRetainedGpuResources extends VrRetainedResourceFactory {
   void setAmbient(fs.Scene? scene, vm.Vector3 radiance) {
     if (scene == null)
       throw StateError('GPU ambient lighting requires a Scene.');
-    scene.environment = fs.EnvironmentMap.constantDiffuse(radiance);
+    _installEnvironment(scene, radiance, radiance);
+  }
+
+  /// The procedural studio radiance flutter_scene uses by default, built
+  /// once per process and shared by every retained scene: legacy materials
+  /// carry only a color and metallic/roughness, so this is the only
+  /// specular environment their metals can reflect.
+  static fs.EnvironmentMap? _studio;
+  static bool _environmentReady = false;
+
+  @override
+  bool get environmentReady => _environmentReady;
+
+  /// Luminance of [c] (Rec. 709 weights), for matching the specular
+  /// environment's brightness to the scene's ambient.
+  static double luminance(vm.Vector3 c) =>
+      0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
+
+  /// Scale applied to the studio specular so reflections sit at the scene's
+  /// ambient level: a dusk temple must not mirror a bright white studio.
+  /// The diffuse SH is divided by the same factor before
+  /// `Scene.environmentIntensity` multiplies both back, so the ambient the
+  /// demo asked for is reproduced exactly while the specular is dimmed.
+  static double environmentSpecularScale(
+    vm.Vector3 sky,
+    vm.Vector3 ground,
+    double studioAverageLuminance,
+  ) {
+    final ambient = 0.5 * (luminance(sky) + luminance(ground));
+    if (!ambient.isFinite || !studioAverageLuminance.isFinite) return 1.0;
+    if (studioAverageLuminance <= 1e-6) return 1.0;
+    return (ambient / studioAverageLuminance).clamp(0.12, 1.0);
+  }
+
+  void _installEnvironment(fs.Scene scene, vm.Vector3 sky, vm.Vector3 ground) {
+    final sh = hemisphereSphericalHarmonics(sky, ground);
+    // The prefilter is a GPU pass: until the shader library is loaded, keep
+    // the diffuse-only environment and let the adapter retry.
+    if (!fs.Scene.isReadyToRender) {
+      scene.environment = fs.EnvironmentMap.fromGpuTextures(
+        prefilteredRadiance: fs.Material.getBlackPlaceholderTexture(),
+        diffuseSphericalHarmonics: sh,
+      );
+      scene.environmentIntensity = 1.0;
+      _environmentReady = false;
+      return;
+    }
+    final studio = _studio ??= fs.EnvironmentMap.studio();
+    // SH band 0 × Y00 is the studio's mean diffuse radiance.
+    final studioAverage = luminance(
+      studio.diffuseSphericalHarmonics.first * 0.28209479177387814,
+    );
+    final k = environmentSpecularScale(sky, ground, studioAverage);
+    scene.environment = fs.EnvironmentMap.fromGpuTextures(
+      prefilteredRadiance: studio.prefilteredRadiance,
+      diffuseSphericalHarmonics: [for (final c in sh) c / k],
+    );
+    scene.environmentIntensity = k;
+    _environmentReady = true;
+  }
+
+  /// Diffuse SH (bands 0–1) whose evaluation equals [sky] for n = +Y and
+  /// [ground] for n = −Y, linear in between. flutter_scene's shader evaluates
+  /// `c0·0.282095 + c1·0.488603·n.y + …` directly as the ambient radiance, so
+  /// the coefficients follow from solving those two equations.
+  static List<vm.Vector3> hemisphereSphericalHarmonics(
+    vm.Vector3 sky,
+    vm.Vector3 ground,
+  ) {
+    const y00 = 0.28209479177387814;
+    const y1m1 = 0.4886025119029199;
+    final sh = List<vm.Vector3>.generate(
+      fs.kDiffuseShCoefficientCount,
+      (_) => vm.Vector3.zero(),
+    );
+    sh[0]
+      ..setFrom(sky)
+      ..add(ground)
+      ..scale(0.5 / y00);
+    sh[1]
+      ..setFrom(sky)
+      ..sub(ground)
+      ..scale(0.5 / y1m1);
+    return sh;
+  }
+
+  @override
+  void setHemisphereAmbient(
+    fs.Scene? scene,
+    vm.Vector3 sky,
+    vm.Vector3 ground,
+  ) {
+    if (scene == null)
+      throw StateError('GPU ambient lighting requires a Scene.');
+    _installEnvironment(scene, sky, ground);
+  }
+
+  @override
+  bool setSky(fs.Scene? scene, VrRetainedSkyDome? sky) {
+    if (scene == null) throw StateError('GPU sky requires a Scene.');
+    if (sky == null) {
+      scene.skybox = null;
+      return true;
+    }
+    // Shader sky sources need the base shader library; retry on a later sync.
+    if (!fs.Scene.isReadyToRender) return false;
+    scene.skybox = fs.Skybox(
+      fs.GradientSkySource(
+        zenithColor: sky.zenith.clone(),
+        horizonColor: sky.horizon.clone(),
+        groundColor: sky.ground.clone(),
+        // No sun disc: legacy scenes light themselves with explicit lights.
+        sunColor: vm.Vector3.zero(),
+      ),
+    );
+    return true;
   }
 }
 
@@ -219,6 +395,16 @@ class VrRetainedSceneAdapter {
   final core.Scene source;
   final fs.Scene? _scene;
 
+  /// When set, the first directional light of the scene casts shadows with
+  /// this shadow-map size (the app passes its quality preset's value).
+  /// Null keeps legacy scenes shadowless.
+  int? shadowMapResolution;
+
+  /// Draws a dome derived from [core.Scene.backgroundColor] when the scene
+  /// defines no sky of its own, so a legacy world need not render against
+  /// black. Off by default: the sky stays opt-in unless the host asks.
+  bool defaultSkyDome = false;
+
   /// Available only with real GPU resources; headless tests exercise the node
   /// graph without substituting a fake renderer or calling the GPU backend.
   fs.Scene get scene =>
@@ -237,11 +423,19 @@ class VrRetainedSceneAdapter {
   final Set<Future<void>> _pending = {};
   final List<String> _diagnostics = [];
   final vm.Vector3 _ambient = vm.Vector3.zero();
+  final vm.Vector3 _ambientGround = vm.Vector3.zero();
   final vm.Vector3 _lastAmbient = vm.Vector3.all(-1);
+  final vm.Vector3 _lastAmbientGround = vm.Vector3.all(-1);
+  VrRetainedSkyDome? _lastSky;
+  bool _skyApplied = true;
   Object? _surfaceError;
   int _epoch = 0;
   bool _disposed = false;
   bool _hasAmbient = false;
+  bool _hasHemisphere = false;
+  core.Light? _shadowCaster;
+  final Map<core.VRTexture, Future<fs.Texture2D?>> _textures =
+      HashMap.identity();
 
   int get nodeCount => _nodes.length;
   int get geometryCount => _geometry.length;
@@ -305,7 +499,9 @@ class VrRetainedSceneAdapter {
     if (_surfaceError case final error?) throw error;
     _epoch++;
     _ambient.setValues(0, 0, 0);
+    _ambientGround.setValues(0, 0, 0);
     _hasAmbient = false;
+    _hasHemisphere = false;
     _visit(source.root, _root, true, elapsedSeconds);
     final removed = _nodes.values.where((e) => e.epoch != _epoch).toList();
     for (final entry in removed) {
@@ -323,15 +519,48 @@ class VrRetainedSceneAdapter {
         _linear(source.ambientColor.g),
         _linear(source.ambientColor.b),
       );
+      _ambientGround.setFrom(_ambient);
     }
-    if (_ambient != _lastAmbient) {
-      resources.setAmbient(_scene, _ambient);
+    if (_ambient != _lastAmbient ||
+        _ambientGround != _lastAmbientGround ||
+        !resources.environmentReady) {
+      if (_hasHemisphere) {
+        resources.setHemisphereAmbient(_scene, _ambient, _ambientGround);
+      } else {
+        resources.setAmbient(_scene, _ambient);
+      }
       _lastAmbient.setFrom(_ambient);
+      _lastAmbientGround.setFrom(_ambientGround);
+    }
+    final background = _linearColor(source.backgroundColor).xyz;
+    final sky = source.hasSkyDome
+        ? VrRetainedSkyDome(
+            zenith: _linearColor(
+              source.skyZenithColor ?? source.backgroundColor,
+            ).xyz,
+            horizon: background,
+            ground: _linearColor(
+              source.skyGroundColor ?? source.backgroundColor,
+            ).xyz,
+          )
+        : defaultSkyDome
+        ? VrRetainedSkyDome(
+            zenith: background * 0.45,
+            horizon: background,
+            ground: background * 0.3,
+          )
+        : null;
+    if (sky != _lastSky || !_skyApplied) {
+      _skyApplied = resources.setSky(_scene, sky);
+      _lastSky = sky;
     }
     _scene?.fog
       ?..enabled = source.fogDensity > 0
       ..mode = fs.FogMode.exponential
       ..density = source.fogDensity
+      ..maxOpacity = source.fogMaxOpacity.clamp(0.0, 1.0)
+      ..cutoffDistance = source.fogCutoffDistance
+      ..heightFalloff = source.fogHeightFalloff
       ..color = vm.Vector3(
         _linear(source.fogColor.r),
         _linear(source.fogColor.g),
@@ -600,8 +829,90 @@ class VrRetainedSceneAdapter {
     if (entry.signature != signature) {
       resources.updateMaterial(entry.material, source);
       entry.signature = signature;
+      _applyTextureFactors(entry, source);
     }
+    _syncTextures(entry, source);
     return entry.material;
+  }
+
+  /// With maps bound, the scalar factors become multipliers (three.js
+  /// semantics): the legacy color tints the color map, the roughness map
+  /// drives roughness, and the author's metallic scalar still scales the
+  /// map's R channel (a gray roughness scan used as an MR map stays
+  /// dielectric).
+  void _applyTextureFactors(_MaterialEntry entry, core.VRMaterial source) {
+    final target = entry.material;
+    if (target is! fs.PhysicallyBasedMaterial) return;
+    if (target.metallicRoughnessTexture != null) {
+      target
+        ..roughnessFactor = 1
+        ..metallicFactor = source.metallic;
+    }
+  }
+
+  /// Binds the legacy maps (base color, normal, metallic-roughness) to the
+  /// GPU material, uploading each [core.VRTexture] once per adapter.
+  void _syncTextures(_MaterialEntry entry, core.VRMaterial source) {
+    final target = entry.material;
+    // A map still loading (VRTexture.loadAsset is async) is treated as
+    // absent and picked up by the sync after it lands.
+    core.VRTexture? ready(core.VRTexture? map) =>
+        map != null && map.isLoaded ? map : null;
+    final colorMap = ready(
+      source is core.PBRMaterial ? (source.colorMap ?? source.map) : source.map,
+    );
+    final normalMap = ready(
+      source is core.PBRMaterial ? source.normalMap : null,
+    );
+    final mrMap = ready(
+      source is core.PBRMaterial ? source.metallicRoughnessMap : null,
+    );
+    final normalScale = source is core.PBRMaterial ? source.normalScale : 1.0;
+    if (identical(entry.colorMap, colorMap) &&
+        identical(entry.normalMap, normalMap) &&
+        identical(entry.metallicRoughnessMap, mrMap)) {
+      if (target is fs.PhysicallyBasedMaterial)
+        target.normalScale = normalScale;
+      return;
+    }
+    entry
+      ..colorMap = colorMap
+      ..normalMap = normalMap
+      ..metallicRoughnessMap = mrMap;
+    final generation = ++entry.textureGeneration;
+    if (target == null) return;
+
+    Future<fs.Texture2D?> upload(core.VRTexture map, {bool normal = false}) =>
+        _textures[map] ??= resources.createTexture(map.image!, normal: normal);
+
+    late Future<void> work;
+    work = () async {
+      final color = colorMap == null ? null : await upload(colorMap);
+      final normalTex = normalMap == null
+          ? null
+          : await upload(normalMap, normal: true);
+      final mr = mrMap == null ? null : await upload(mrMap);
+      if (_disposed || entry.textureGeneration != generation) return;
+      fs.TextureTransform repeat(core.VRTexture? map) => map == null
+          ? fs.TextureTransform()
+          : fs.TextureTransform(scale: vm.Vector2(map.repeatU, map.repeatV));
+      if (target is fs.PhysicallyBasedMaterial) {
+        target
+          ..baseColorTexture = color
+          ..baseColorTextureTransform = repeat(colorMap)
+          ..normalTexture = normalTex
+          ..normalTextureTransform = repeat(normalMap)
+          ..normalScale = normalScale
+          ..metallicRoughnessTexture = mr
+          ..metallicRoughnessTextureTransform = repeat(mrMap);
+        _applyTextureFactors(entry, source);
+      } else if (target is fs.UnlitMaterial) {
+        target
+          ..baseColorTexture = color
+          ..baseColorTextureTransform = repeat(colorMap);
+      }
+    }().whenComplete(() => _pending.remove(work));
+    _pending.add(work);
   }
 
   void _validateMaterial(core.VRMaterial material, core.Node node) {
@@ -613,17 +924,14 @@ class VrRetainedSceneAdapter {
       );
     }
     if (material.blendMode != ui.BlendMode.srcOver ||
-        material.map != null ||
         (material is core.PBRMaterial &&
-            (material.colorMap != null ||
-                material.normalMap != null ||
-                material.metallicRoughnessMap != null ||
-                material.emissionMap != null ||
+            (material.emissionMap != null ||
                 material.aoMap != null ||
                 material.envMap != null ||
                 material.alphaMap != null))) {
       throw UnsupportedError(
-        'Retained scene ${node.name}: custom blend modes / legacy texture maps need an explicit GPU material conversion.',
+        'Retained scene ${node.name}: custom blend modes / emission, AO, '
+        'environment and alpha maps need an explicit GPU material conversion.',
       );
     }
   }
@@ -633,9 +941,19 @@ class VrRetainedSceneAdapter {
     if (light.type == core.LightType.ambient) {
       if (visible) {
         _hasAmbient = true;
-        _ambient.add(
-          vm.Vector3(color.x, color.y, color.z)..scale(light.intensity),
-        );
+        final sky = vm.Vector3(color.x, color.y, color.z)
+          ..scale(light.intensity);
+        _ambient.add(sky);
+        final groundColor = light.groundColor;
+        if (groundColor == null) {
+          _ambientGround.add(sky);
+        } else {
+          _hasHemisphere = true;
+          final ground = _linearColor(groundColor);
+          _ambientGround.add(
+            vm.Vector3(ground.x, ground.y, ground.z)..scale(light.intensity),
+          );
+        }
       }
       return;
     }
@@ -652,7 +970,13 @@ class VrRetainedSceneAdapter {
     } else if (light.type == core.LightType.directional) {
       final target = entry.directional ??= fs.DirectionalLight(
         castsShadow: false,
+        shadowMaxDistance: 40,
+        shadowCascadeCount: 2,
       );
+      final resolution = shadowMapResolution;
+      final caster = resolution != null && (_shadowCaster ??= light) == light;
+      target.castsShadow = caster;
+      if (caster) target.shadowMapResolution = resolution;
       if (entry.lightComponent == null || entry.direction != light.direction) {
         if (entry.lightComponent != null)
           entry.node.removeComponent(entry.lightComponent!);
@@ -796,6 +1120,10 @@ class _MaterialEntry {
   final fs.Material? material;
   int epoch = 0;
   int? signature;
+  core.VRTexture? colorMap;
+  core.VRTexture? normalMap;
+  core.VRTexture? metallicRoughnessMap;
+  int textureGeneration = 0;
 }
 
 double _linear(double value) => value <= 0.04045

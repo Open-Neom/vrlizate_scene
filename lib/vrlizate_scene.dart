@@ -21,6 +21,7 @@ export 'src/vr_thermal_governor.dart';
 export 'src/vr_world_navigation_scope.dart';
 export 'src/vr_input_session_scope.dart';
 export 'src/vr_controller_feedback.dart';
+export 'src/vr_zenith_recenter.dart';
 export 'src/openxr/vr_gpu_external_render_target.dart';
 export 'src/openxr/vr_openxr_swapchain_bridge.dart';
 export 'src/openxr/vr_openxr_native_bridge.dart';

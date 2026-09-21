@@ -37,9 +37,12 @@ void main() {
       expect(VrQualityPreset.low.stepDown.tier, VrQualityTier.low);
     });
 
-    test('high tier uses MSAA, medium uses FXAA, low uses none', () {
+    test('high tier uses MSAA, medium MSAA-with-FXAA-fallback, low none', () {
       expect(VrQualityPreset.high.antiAliasing, AntiAliasingMode.msaa);
-      expect(VrQualityPreset.medium.antiAliasing, AntiAliasingMode.fxaa);
+      // `auto` is MSAA where the backend supports it, FXAA elsewhere:
+      // crisp edges and label text on the default tier without a hard
+      // dependency on MSAA support.
+      expect(VrQualityPreset.medium.antiAliasing, AntiAliasingMode.auto);
       expect(VrQualityPreset.low.antiAliasing, AntiAliasingMode.none);
     });
   });

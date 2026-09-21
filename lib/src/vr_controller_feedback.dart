@@ -27,12 +27,24 @@ class VrControllerFeedbackState {
     this.steering = 0,
     this.throttle = 0,
     this.brake = 0,
+    this.actions = const {},
   });
 
   final bool connected, visible, btnA, btnB, btnX, btnY, btnL, btnR, grip;
   final double moveX, moveY, lookX, lookY, laserX, laserY;
   final bool driving;
   final double steering, throttle, brake;
+
+  /// What each button does in the active experience, keyed by the button's
+  /// printed name (`A`, `B`, `X`, `Y`, `L`, `R`, `GRIP`). Drawn as a caption
+  /// under the key so a viewer glancing down at the controller sees, for
+  /// example, `X · Cambiar arma` instead of a bare letter. Values longer than
+  /// [maxActionLength] are truncated when drawn. Static per experience: the
+  /// label atlas is re-rasterized only when this map changes.
+  final Map<String, String> actions;
+
+  /// Longest caption the atlas can fit under a key without overlapping.
+  static const int maxActionLength = 14;
 
   bool get shown => connected && visible;
 
@@ -58,7 +70,8 @@ class VrControllerFeedbackState {
           driving == other.driving &&
           steering == other.steering &&
           throttle == other.throttle &&
-          brake == other.brake;
+          brake == other.brake &&
+          mapEquals(actions, other.actions);
 
   @override
   int get hashCode => Object.hash(
@@ -81,6 +94,9 @@ class VrControllerFeedbackState {
     steering,
     throttle,
     brake,
+    Object.hashAllUnordered(
+      actions.entries.map((e) => Object.hash(e.key, e.value)),
+    ),
   );
 }
 

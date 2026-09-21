@@ -37,6 +37,25 @@ class StereoHeadRig implements RotationTarget {
   /// Recentring the head must not rotate the car or reset its world heading.
   double bodyYaw = 0;
 
+  /// Manual vertical look offset in radians, composed with the tracked head
+  /// pitch (positive looks down, like [CameraRig.pitch]).
+  ///
+  /// The head tracker writes an *absolute* gravity-referenced pitch into the
+  /// camera rig on every sensor sample, so a look-stick delta written there
+  /// is erased within one sample. Stick input accumulates here instead and is
+  /// composed at read time; [recenter] leaves it untouched, exactly like
+  /// [bodyYaw]. The composed [pitch] stays within the rig's ±83° clamp.
+  double bodyPitch = 0;
+
+  /// Composed vertical look angle: tracked head pitch plus [bodyPitch],
+  /// clamped like [CameraRig.pitch]. Positive looks down.
+  double get pitch => (cameraRig.pitch + bodyPitch).clamp(-1.45, 1.45);
+
+  /// Composed horizontal heading: tracked head yaw plus [bodyYaw].
+  double get yaw => cameraRig.yaw + bodyYaw;
+
+  bool get _hasBodyOffset => bodyYaw != 0 || bodyPitch != 0;
+
   /// Distance in meters of the zero-parallax plane, before image-center inset.
   ///
   /// Both cameras remain parallel. An asymmetric projection aligns content at
@@ -84,19 +103,18 @@ class StereoHeadRig implements RotationTarget {
   vm.Vector3 get eyeCenter => cameraRig.position;
   set eyeCenter(vm.Vector3 value) => cameraRig.position = value;
 
-  /// World-space head orientation quaternion.
+  /// World-space head orientation quaternion, including [bodyYaw] and
+  /// [bodyPitch]. Same yaw-then-pitch composition as [CameraRig], so the
+  /// horizon stays level (zero roll).
   vm.Quaternion get orientation {
-    if (bodyYaw == 0) return cameraRig.headTransform.rotation;
-    final yaw = vm.Quaternion.axisAngle(
-      vm.Vector3(0, 1, 0),
-      cameraRig.yaw + bodyYaw,
-    );
-    final pitch = vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), cameraRig.pitch);
-    return (pitch * yaw)..normalize();
+    if (!_hasBodyOffset) return cameraRig.headTransform.rotation;
+    final yawQ = vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), yaw);
+    final pitchQ = vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), pitch);
+    return (pitchQ * yawQ)..normalize();
   }
 
   /// World-space gaze direction (−Z head axis, rotated).
-  vm.Vector3 get forward => bodyYaw == 0
+  vm.Vector3 get forward => !_hasBodyOffset
       ? cameraRig.headTransform.forward
       : orientation.rotated(vm.Vector3(0, 0, -1));
 
@@ -104,12 +122,12 @@ class StereoHeadRig implements RotationTarget {
   ///
   /// This differs from [screenRight] because flutter_scene's view convention
   /// uses `up.cross(forward)` for its horizontal camera axis.
-  vm.Vector3 get right => bodyYaw == 0
+  vm.Vector3 get right => !_hasBodyOffset
       ? cameraRig.headTransform.right
       : orientation.rotated(vm.Vector3(1, 0, 0));
 
   /// World-space head-up direction.
-  vm.Vector3 get up => bodyYaw == 0
+  vm.Vector3 get up => !_hasBodyOffset
       ? cameraRig.headTransform.up
       : orientation.rotated(vm.Vector3(0, 1, 0));
 
@@ -258,28 +276,31 @@ final class _ShiftedPerspectiveCamera extends PerspectiveCamera {
   );
 }
 
-final class _ShiftedPerspectiveProjection extends CameraProjection {
+/// A pinhole perspective with a horizontal clip-space shift for stereo.
+///
+/// It *is* a [PerspectiveProjection] so flutter_scene keeps its
+/// perspective-only features — cascaded shadow fitting (which reads only
+/// `fovRadiansY`, `near` and the camera forward), god rays, depth of field and
+/// ambient occlusion — active in stereo instead of silently disabling them.
+/// Screen-space effects that reconstruct positions from depth assume a
+/// symmetric frustum and therefore see a uniform lateral offset of
+/// `shift × tan(fovX/2) × depth`; it is the same for neighboring samples, so
+/// relative effects such as AO are unaffected in practice.
+final class _ShiftedPerspectiveProjection extends PerspectiveProjection {
   _ShiftedPerspectiveProjection({
-    required this.fovRadiansY,
-    required this.near,
-    required this.far,
+    required super.fovRadiansY,
+    required super.near,
+    required super.far,
     required this.horizontalShift,
     required this.eyeOffsetOverConvergence,
   });
 
-  final double fovRadiansY;
-  final double near;
-  final double far;
   final double horizontalShift;
   final double eyeOffsetOverConvergence;
 
   @override
   vm.Matrix4 getProjectionMatrix(double aspectRatio) {
-    final matrix = PerspectiveProjection(
-      fovRadiansY: fovRadiansY,
-      near: near,
-      far: far,
-    ).getProjectionMatrix(aspectRatio);
+    final matrix = super.getProjectionMatrix(aspectRatio);
     // flutter_scene uses a left-handed view: clip.w = view.z and
     // clip.x = P00 * view.x + P02 * view.z. At the convergence point,
     // view.x = -eyeOffset, so adding P00 * eyeOffset / distance cancels

@@ -29,6 +29,7 @@ import 'vr_controller_feedback_visuals.dart';
 import 'vr_scene_input_controller.dart';
 import 'vr_scene_pointer_interaction.dart';
 import 'vr_viewer_profile.dart';
+import 'vr_zenith_recenter.dart';
 import 'openxr/vr_openxr_swapchain_bridge.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
@@ -119,7 +120,9 @@ class StereoSceneView extends StatefulWidget {
   /// Whether double-tapping on screen recenters the horizontal gaze heading.
   final bool doubleTapToRecenter;
 
-  /// Whether looking straight up (~55° pitch) triggers hands-free recentering.
+  /// Whether looking straight up (more than ~55° above the horizon for 0.8 s)
+  /// triggers hands-free recentering. Looking down never triggers it, so the
+  /// downward-gaze controller feedback window is unaffected.
   final bool zenithRecenter;
 
   /// Whether physical tap on visor/temple triggers instant gaze select and double-tap recenters.
@@ -242,8 +245,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
   final _gazeLifecycle = VrSceneGazeLifecycle();
   final ValueNotifier<double> _dwellProgress = ValueNotifier(0);
   final ValueNotifier<double> _zenithProgress = ValueNotifier(0);
-  double _zenithTimer = 0;
-  bool _zenithTriggered = false;
+  final VrZenithRecenterDetector _zenith = VrZenithRecenterDetector();
 
   InertialTapDetector? _tapDetector;
   VrQualityPreset? _preset;
@@ -564,24 +566,21 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
       _handRig!.update(_rig.eyeCenter, _rig.cameraRig.rotation, t);
     }
 
-    // Hands-free zenith recenter (looking up > 55°).
+    // Hands-free zenith recenter (looking up > 55°). CameraRig pitch is
+    // positive *downward* — the same convention the controller feedback's
+    // 20°-from-feet window relies on — so the detector arms on the negative
+    // side; the previous positive-side test fired while looking down at
+    // that controller.
     if (view.zenithRecenter) {
-      if (_rig.cameraRig.pitch > 0.95) {
-        _zenithTimer += dt;
-        _zenithProgress.value = (_zenithTimer / 0.8).clamp(0.0, 1.0);
-        if (_zenithTimer >= 0.8 && !_zenithTriggered) {
-          _zenithTriggered = true;
-          _headTracker.recenter();
-          _rig.recenter();
-          if (view.enableHaptics) {
-            HapticFeedback.mediumImpact();
-          }
+      if (_zenith.update(_rig.pitch, dt)) {
+        _headTracker.recenter();
+        _rig.recenter();
+        if (view.enableHaptics) {
+          HapticFeedback.mediumImpact();
         }
-      } else {
-        _zenithTimer = 0;
-        _zenithTriggered = false;
-        if (_zenithProgress.value != 0) _zenithProgress.value = 0;
       }
+      final progress = _zenith.progress;
+      if (_zenithProgress.value != progress) _zenithProgress.value = progress;
     }
 
     if (view.gazeEnabled || systemGazeEnabled) {
@@ -1019,11 +1018,20 @@ class _ReticlePainter extends CustomPainter {
         leftCenter = left;
         rightCenter = right + Offset(size.width / 2, 0);
       }
+      // Gaze keeps a neutral white ring; the phone's laser paints its cursor
+      // in the laser color, like the reticle a Quest controller leaves on the
+      // surface it points at.
+      final pointing = pointer != null;
       final ring = Paint()
-        ..color = Colors.white.withValues(alpha: 0.7)
+        ..color = (pointing ? Colors.cyanAccent : Colors.white).withValues(
+          alpha: 0.75,
+        )
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2;
-      final dot = Paint()..color = Colors.white.withValues(alpha: 0.95);
+      final dot = Paint()
+        ..color = (pointing ? Colors.cyanAccent : Colors.white).withValues(
+          alpha: 0.95,
+        );
       final arc = Paint()
         ..color = Colors.cyanAccent
         ..style = PaintingStyle.stroke
