@@ -48,11 +48,13 @@ and Back where navigation is available, not an automatic retry loop. The error
 screen is intentionally ordinary Flutter UI: remove the headset to recover
 when GPU rendering itself is unavailable.
 
-- Dart `^3.10.0`, Flutter `>=3.44.0`, and a runtime/backend supported by
+- Dart `^3.10.0`, Flutter `>=3.47.0`, and a runtime/backend supported by
   `flutter_scene` and Flutter GPU. The SDK constraint alone does not guarantee
   GPU support on a device.
 - Follow the installed [flutter_scene setup instructions](https://pub.dev/packages/flutter_scene)
   for backend and shader/data-asset configuration.
+- Shipping Windows or Linux releases requires Flutter `>=3.47.1` and Flutter
+  GPU enabled in the platform runner, as documented by `flutter_scene`.
 - This release was tested locally using Flutter
   `3.48.0-1.0.pre-371` / Dart `3.14.0-147.0.dev`. This records the tested
   environment; it is not a claim that every listed platform has been validated.
@@ -130,19 +132,24 @@ package.
 
 | Preset | Resolution multiplier | Requested AA | Bloom |
 |---|---:|---|---|
-| low | 0.75× | none | off |
-| medium | 0.90× | FXAA | off |
-| high | 1.00× | MSAA | on |
+| low | 0.60× | none | off |
+| medium | 1.00× | auto | off |
+| high | 1.00× | MSAA | off |
 | ultra | 1.15× | MSAA | on |
 
 Resolution scales both dimensions relative to device pixels. Backend support
-can change the effective AA technique. Automatic tier detection uses display
-density/refresh heuristics, not a GPU benchmark.
+can change the effective AA technique. The initial automatic tier is conservative
+medium; display density and refresh rate do not measure GPU capability.
 
-With `dynamicScaling: true`, an animation-tick interval monitor steps down
-after a warmup and sustained intervals above its 18 ms budget. Its 30-frame
-warmup and 45-frame evaluation window take longer on slow devices. It does not
-measure GPU completion, promise 60 FPS, or increase quality automatically.
+With `dynamicScaling: true`, Flutter `FrameTiming` samples compare build and
+raster durations separately with `1 / targetRefreshRateHz`. The default target
+uses the display refresh rate, falling back to 60 Hz when unavailable; an explicit
+target allows intentional lower-cadence rendering without changing the OS mode.
+After 30 warmup samples, two consecutive 45-sample windows with at least 20%
+over-budget frames reduce quality one tier. Long frames are retained. Monitoring
+pauses in the background or outside `TickerMode`; scene, quality, visibility and
+target-rate changes reset evaluation. This does not measure GPU completion,
+promise a frame rate, or increase quality automatically.
 Use `onQualityChanged` to observe the effective preset; avoid running competing
 quality controllers. The separately exported `VrThermalGovernor` estimates
 performance from frame intervals and does not read hardware temperature.

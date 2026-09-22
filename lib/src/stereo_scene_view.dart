@@ -18,6 +18,7 @@ import 'package:vrlizate_widgets/vrlizate_widgets.dart'
     show VrButton3D, VrTextLabel;
 
 import 'quality_preset.dart';
+import 'vr_frame_quality.dart';
 import 'vr_gpu_resource_gate.dart';
 import 'simulated_hand_visuals.dart';
 import 'stereo_head_rig.dart';
@@ -66,6 +67,7 @@ class StereoSceneView extends StatefulWidget {
     this.showReticle = true,
     this.quality,
     this.dynamicScaling = true,
+    this.targetRefreshRateHz,
     this.onQualityChanged,
     this.onTick,
     this.look,
@@ -183,13 +185,18 @@ class StereoSceneView extends StatefulWidget {
   /// Whether to draw the center reticle with dwell progress.
   final bool showReticle;
 
-  /// Quality preset; when null it is auto-detected from the display
-  /// (refresh rate + pixel density). See [VrQualityPreset].
+  /// Quality preset; when null a conservative preset is selected.
   final VrQualityPreset? quality;
 
-  /// When true, frame times are monitored and quality steps down one tier
-  /// if the rolling average stays above the frame budget.
+  /// When true, sustained build/raster overruns reduce quality one tier.
+  /// Monitoring pauses with the app lifecycle and when TickerMode is disabled.
   final bool dynamicScaling;
+
+  /// Intended render cadence for adaptive quality. Null uses the current
+  /// display refresh rate (60 Hz only when the engine reports no valid rate).
+  /// Set this when the app intentionally renders below the display cadence.
+  /// This does not change the display mode or request an OS refresh rate.
+  final double? targetRefreshRateHz;
 
   /// Called whenever the effective quality tier changes (auto-detection or
   /// dynamic downscaling).
@@ -225,7 +232,8 @@ class _ReadyStereoSceneView extends StatefulWidget {
   State<_ReadyStereoSceneView> createState() => _StereoSceneViewState();
 }
 
-class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
+class _StereoSceneViewState extends State<_ReadyStereoSceneView>
+    with WidgetsBindingObserver {
   StereoSceneView get view => widget.configuration;
   late final StereoHeadRig _rig =
       view.rig ??
@@ -289,15 +297,17 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
   /// The quality preset currently in effect.
   VrQualityPreset? get effectivePreset => _preset;
 
-  // Dynamic frame-time scaling state.
-  double _frameTimeSum = 0;
-  int _frameTimeCount = 0;
-  static const int _warmupFrames = 30; // 0.5s warmup
-  static const int _windowFrames = 45; // ~0.75s evaluation window
-  static const double _frameBudgetSeconds = 0.018; // ~55 FPS budget
+  final _qualityPolicy = VrFrameQualityPolicy();
+  late final _qualityMonitor = VrFrameQualityMonitor(
+    policy: _qualityPolicy,
+    onPressure: _reduceQuality,
+  );
+  late final vm.Vector3? Function() _readPointerPosition = () =>
+      _input.pointerActive ? _pointerPosition : null;
 
   void _applyPreset(VrQualityPreset preset) {
     _preset = preset;
+    _qualityPolicy.reset();
     view.scene.antiAliasingMode = preset.antiAliasing;
     view.scene.postProcess.bloom.enabled = preset.bloomEnabled;
     view.look?.applyToScene(view.scene, preset);
@@ -307,6 +317,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (view.rig == null) {
       _rig.eyeCenter.setValues(0, 1.6, 0);
     }
@@ -455,6 +466,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _syncQualityMonitoring();
     _updateActiveArbiter();
     _updateFeedbackSource();
     final profile = VrViewerProfileScope.maybeOf(context)?.profile;
@@ -482,6 +494,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
     super.didUpdateWidget(oldWidget);
     final previous = oldWidget.configuration;
     if (!identical(previous.scene, view.scene)) {
+      _qualityPolicy.reset();
       _feedbackVisuals?.dispose();
       _feedbackVisuals = null;
       _feedbackScene = null;
@@ -518,10 +531,13 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
     if (view.look != previous.look && view.look != null) {
       view.look!.applyToScene(view.scene, _preset ?? VrQualityPreset.medium);
     }
+    _syncQualityMonitoring();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _qualityMonitor.dispose();
     _feedbackSource?.removeListener(_onFeedbackChanged);
     _feedbackSource = null;
     _feedbackVisuals?.dispose();
@@ -552,7 +568,6 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
     final hadPointer = _input.pointerActive;
     _input.update(dt);
     view.onInteractionRay?.call(_input.ray);
-    _monitorFrameTime(dt);
 
     final t = elapsed.inMicroseconds / 1000000.0;
     if (t > 0.20 &&
@@ -749,22 +764,27 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
     _nodesByName.remove(_worldHomeNodeName);
   }
 
-  /// Rolling frame-time monitor: after a warmup, if the average frame time
-  /// over a window exceeds the budget, quality steps down one tier.
-  void _monitorFrameTime(double dt) {
-    if (!view.dynamicScaling || _preset == null) return;
-    if (_preset!.tier == VrQualityTier.low) return;
-    _frameTimeCount++;
-    if (_frameTimeCount <= _warmupFrames) return;
-    _frameTimeSum += dt;
-    final windowCount = _frameTimeCount - _warmupFrames;
-    if (windowCount < _windowFrames) return;
-    final avg = _frameTimeSum / windowCount;
-    _frameTimeSum = 0;
-    _frameTimeCount = _warmupFrames;
-    if (avg > _frameBudgetSeconds) {
-      setState(() => _applyPreset(_preset!.stepDown));
-    }
+  @override
+  void didChangeMetrics() {
+    if (mounted) _syncQualityMonitoring();
+  }
+
+  void _syncQualityMonitoring() {
+    final displayHz = View.of(context).display.refreshRate;
+    final target =
+        view.targetRefreshRateHz ??
+        (displayHz.isFinite && displayHz > 0 ? displayHz : 60.0);
+    _qualityPolicy.targetRefreshRateHz = target;
+    _qualityMonitor.setActive(
+      view.dynamicScaling && TickerMode.valuesOf(context).enabled,
+    );
+  }
+
+  void _reduceQuality() {
+    final preset = _preset;
+    if (!mounted || !view.dynamicScaling || preset == null) return;
+    if (preset.tier == VrQualityTier.low) return;
+    setState(() => _applyPreset(preset.stepDown));
   }
 
   @override
@@ -828,18 +848,19 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView> {
         fit: StackFit.expand,
         children: [
           child,
-          IgnorePointer(
-            child: CustomPaint(
-              painter: _ReticlePainter(
-                progress: _dwellProgress,
-                zenithProgress: _zenithProgress,
-                showDivider: view.showAlignmentDivider,
-                showReticle: view.showReticle && effectiveGaze,
-                stereoImageInset: _rig.stereoImageInset,
-                pointerRepaint: _pointerRepaint,
-                pointerPosition: () =>
-                    _input.pointerActive ? _pointerPosition : null,
-                rig: _rig,
+          RepaintBoundary(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _ReticlePainter(
+                  progress: _dwellProgress,
+                  zenithProgress: _zenithProgress,
+                  showDivider: view.showAlignmentDivider,
+                  showReticle: view.showReticle && effectiveGaze,
+                  stereoImageInset: _rig.stereoImageInset,
+                  pointerRepaint: _pointerRepaint,
+                  pointerPosition: _readPointerPosition,
+                  rig: _rig,
+                ),
               ),
             ),
           ),
@@ -1061,5 +1082,12 @@ class _ReticlePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_ReticlePainter oldDelegate) => true;
+  bool shouldRepaint(_ReticlePainter oldDelegate) =>
+      progress != oldDelegate.progress ||
+      zenithProgress != oldDelegate.zenithProgress ||
+      showDivider != oldDelegate.showDivider ||
+      showReticle != oldDelegate.showReticle ||
+      stereoImageInset != oldDelegate.stereoImageInset ||
+      pointerPosition != oldDelegate.pointerPosition ||
+      rig != oldDelegate.rig;
 }

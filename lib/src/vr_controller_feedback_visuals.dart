@@ -25,9 +25,17 @@ class VrControllerFeedbackVisuals {
     VrControllerFeedbackMeshBuilder? meshBuilder,
     Future<Mesh?> Function(VrRetainedSurface surface)? artworkBuilder,
     this.gazeFilterEnabled = true,
-    this.targetGazeAngleDeg = targetGazeAngleFromFeetDeg,
-    this.gazeAngleToleranceDeg = defaultGazeAngleToleranceDeg,
-  }) {
+    double? targetGazeAngleDeg,
+    double? gazeAngleToleranceDeg,
+    this.revealHeadPitchDeg = 30,
+    this.hideHeadPitchDeg = 20,
+  }) : assert(revealHeadPitchDeg > hideHeadPitchDeg),
+       assert(hideHeadPitchDeg >= 0 && revealHeadPitchDeg <= 90),
+       targetGazeAngleDeg = targetGazeAngleDeg ?? targetGazeAngleFromFeetDeg,
+       gazeAngleToleranceDeg =
+           gazeAngleToleranceDeg ?? defaultGazeAngleToleranceDeg,
+       _usesLegacyGazeWindow =
+           targetGazeAngleDeg != null || gazeAngleToleranceDeg != null {
     final createMesh = meshBuilder ?? _gpuMesh;
     Node part(
       String id,
@@ -152,11 +160,17 @@ class VrControllerFeedbackVisuals {
   }
 
   static const nodePrefix = '__vrlizate_controller_feedback_';
-  static const distanceMeters = 1.8;
-  static const screenAlignmentY = .68;
 
-  /// Target downward gaze angle in degrees where the virtual controller is displayed,
-  /// considering 0° as looking straight down at feet and 90° as looking at the horizon.
+  /// Forward depth beyond the rig's default 1.8 m convergence plane, so the
+  /// controller has visible stereo depth instead of sitting on the reticles.
+  static const distanceMeters = 3.0;
+  static const screenAlignmentY = .68;
+  // Keep labels readable at the greater depth, with a slightly smaller angular
+  // footprint than the original 0.8 m-wide model at 1.8 m.
+  static const _modelScale = 1.4;
+
+  /// Legacy window center, measured from feet: 0° = nadir, 90° = horizon.
+  /// Used only when a custom gaze window is explicitly requested.
   static const double targetGazeAngleFromFeetDeg = 20.0;
 
   /// Angular tolerance window around [targetGazeAngleFromFeetDeg] (±15°).
@@ -170,8 +184,11 @@ class VrControllerFeedbackVisuals {
     return 90.0 - pitchDeg;
   }
 
-  /// Returns true if the viewer's gaze is directed towards the virtual controller
-  /// (at around 20° looking down, where 0° is looking at feet).
+  /// Evaluates the legacy, stateless window using the composed gaze angle.
+  ///
+  /// Angles are measured from feet, not below the horizon. Default visual
+  /// visibility instead uses physical head pitch and hysteresis, so moving
+  /// the look stick does not summon or hide the controller.
   static bool isGazeTowardsController(
     StereoHeadRig rig, {
     double targetAngleDeg = targetGazeAngleFromFeetDeg,
@@ -182,8 +199,21 @@ class VrControllerFeedbackVisuals {
   }
 
   final bool gazeFilterEnabled;
+
+  /// Legacy window center and tolerance, in degrees from feet. Passing either
+  /// constructor argument explicitly preserves the composed-gaze window.
   final double targetGazeAngleDeg;
   final double gazeAngleToleranceDeg;
+
+  /// Physical head tilt below the horizon needed to reveal the controller.
+  /// Independent of the look stick's manual pitch offset.
+  final double revealHeadPitchDeg;
+
+  /// Returning to this head tilt or higher toward the horizon hides it.
+  /// The gap from [revealHeadPitchDeg] prevents flicker near the reveal angle.
+  final double hideHeadPitchDeg;
+  final bool _usesLegacyGazeWindow;
+  bool _gazeRevealed = false;
 
   // Local +X projects LEFT in flutter_scene; the atlas has the same UV basis
   // as VrRetainedSurface. Use the rig's real screen basis, including body yaw.
@@ -331,6 +361,7 @@ class VrControllerFeedbackVisuals {
       _loadArtwork(state.actions);
     }
     if (!state.shown) {
+      _gazeRevealed = false;
       root.visible = false;
       return;
     }
@@ -383,25 +414,44 @@ class VrControllerFeedbackVisuals {
     if (_disposed) return;
     final isConnected = _state?.shown ?? false;
     if (!isConnected) {
+      _gazeRevealed = false;
       root.visible = false;
       return;
     }
     if (gazeFilterEnabled) {
-      final isLooking = isGazeTowardsController(
-        rig,
-        targetAngleDeg: targetGazeAngleDeg,
-        toleranceDeg: gazeAngleToleranceDeg,
-      );
-      root.visible = isLooking;
-      if (!isLooking) return;
+      if (_usesLegacyGazeWindow) {
+        _gazeRevealed = isGazeTowardsController(
+          rig,
+          targetAngleDeg: targetGazeAngleDeg,
+          toleranceDeg: gazeAngleToleranceDeg,
+        );
+      } else {
+        // The gesture is a real head tilt. Rendering below still uses the
+        // composed rig so the model stays in the same basis as both eyes.
+        final headPitch = rig.cameraRig.pitch;
+        if (!headPitch.isFinite ||
+            headPitch <= hideHeadPitchDeg * math.pi / 180) {
+          _gazeRevealed = false;
+        } else if (headPitch >= revealHeadPitchDeg * math.pi / 180) {
+          _gazeRevealed = true;
+        }
+      }
+      root.visible = _gazeRevealed;
+      if (!_gazeRevealed) return;
     } else {
       root.visible = true;
     }
     final forward = rig.forward;
     final right = rig.screenRight;
     final up = rig.up;
-    final halfHeight = distanceMeters * math.tan(rig.cameraRig.fovY / 2);
-    final scale = math.min(1.0, halfHeight * .30 / .17);
+    final tanHalfFov = math.tan(rig.cameraRig.fovY / 2);
+    final halfHeight = distanceMeters * tanHalfFov;
+    // Include the label plane's height and forward offset in the FOV cap:
+    // its lower edge is closer to the eye than the root and must stay in view.
+    final scale = math.min(
+      _modelScale,
+      halfHeight * .30 / (.175 + .086 * tanHalfFov),
+    );
     _scratch.setFrom(rig.eyeCenter);
     _scratch.addScaled(forward, distanceMeters);
     _scratch.addScaled(up, -halfHeight * screenAlignmentY);
@@ -451,7 +501,7 @@ class _FeedbackKey {
 ///
 /// The scene supplied by [render] must contain only feedback, not the world.
 /// flutter_scene gives each Scene/render view its own depth target; composing
-/// this after the world preserves 1.8m stereo disparity while preventing the
+/// this after the world preserves the model's stereo depth while preventing the
 /// floor/cockpit from occluding telemetry. No second clock or hit targets.
 typedef VrControllerFeedbackRender =
     void Function(

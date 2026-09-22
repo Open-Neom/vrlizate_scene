@@ -30,7 +30,9 @@ void main() {
           expect(pixelRatio, 1.25);
           expect(views, hasLength(2));
           final expected = rig.buildStereoViews();
-          final atDepth = rig.eyeCenter + rig.forward * 1.8;
+          final atDepth =
+              rig.eyeCenter +
+              rig.forward * VrControllerFeedbackVisuals.distanceMeters;
           for (var i = 0; i < views.length; i++) {
             expect(views[i].viewport, expected[i].viewport);
             final actualPoint = views[i].camera.worldToScreen(
@@ -294,6 +296,79 @@ void main() {
   );
 
   test(
+    'controller has distant stereo depth and readable bounds in both eyes',
+    () async {
+      final fixture = _Fixture();
+      final visual = fixture.create();
+      await visual.ready;
+      addTearDown(visual.dispose);
+      final rig = StereoHeadRig()..eyeCenter = vm.Vector3(3, 1.6, -2);
+      rig.setOrientation(.4, .6);
+      rig.bodyYaw = .8;
+      rig.bodyPitch = -.15;
+      visual.setState(const VrControllerFeedbackState(connected: true));
+      const size = Size(400, 400);
+
+      for (final fov in [1.2, .5]) {
+        rig.cameraRig.fovY = fov;
+        visual.updatePose(rig);
+        final offset = visual.root.position - rig.eyeCenter;
+        expect(offset.dot(rig.forward), closeTo(3, 1e-5));
+        expect(offset.dot(rig.screenRight), closeTo(0, 1e-5));
+        expect(rig.convergenceDistance, 1.8);
+
+        final disparityFromConvergence = <double>[];
+        for (final eye in StereoEye.values) {
+          final camera = rig.eyeCamera(eye);
+          final center = camera.worldToScreen(visual.root.position, size)!;
+          final convergence = camera.worldToScreen(
+            rig.convergencePoint!,
+            size,
+          )!;
+          final disparity = center.dx - convergence.dx;
+          disparityFromConvergence.add(disparity);
+          expect(
+            disparity,
+            eye == StereoEye.left ? lessThan(-1) : greaterThan(1),
+            reason: 'the controller projects beyond the convergence plane',
+          );
+          expect(center.dy, closeTo(336, .01));
+
+          final corners = [
+            for (final x in [-.4, .4])
+              for (final y in [-.175, .175])
+                camera.worldToScreen(
+                  visual.root.globalTransform.transformed3(
+                    vm.Vector3(x, y, .086),
+                  ),
+                  size,
+                )!,
+          ];
+          for (final corner in corners) {
+            expect(corner.dx, inInclusiveRange(0, size.width));
+            expect(corner.dy, inInclusiveRange(0, size.height));
+          }
+          final artworkWidth = (corners[2].dx - corners[0].dx).abs();
+          expect(
+            artworkWidth,
+            greaterThan(size.width * .27),
+            reason: 'distance must not make the control labels too small',
+          );
+          if (fov == 1.2) {
+            expect(artworkWidth, lessThan(size.width * .30));
+          }
+        }
+        expect(
+          disparityFromConvergence[0],
+          closeTo(-disparityFromConvergence[1], .001),
+          reason: 'both eyes use the same depth without vertical disparity',
+        );
+      }
+      expect(fixture.artworks, hasLength(1));
+    },
+  );
+
+  test(
     'telemetry subtree never participates in geometry or named ray picking',
     () async {
       final fixture = _Fixture();
@@ -479,106 +554,141 @@ void main() {
   );
 
   test(
-    'virtual controller is only visible when looking down around 20° from feet',
+    'controller reveals at 30 degrees and hides at 20 without flicker',
     () async {
-      final fixture = _Fixture();
-      // Default: gazeFilterEnabled is true
-      final visual = fixture.create(gazeFilterEnabled: true);
+      final visual = _Fixture().create(gazeFilterEnabled: true);
       await visual.ready;
-
+      addTearDown(visual.dispose);
       final rig = StereoHeadRig();
       visual.setState(const VrControllerFeedbackState(connected: true));
+      void pitch(double degrees) {
+        rig.setPitch(degrees * math.pi / 180);
+        visual.updatePose(rig);
+      }
 
-      // 1. Looking at horizon (pitch = 0.0, 90° from feet) -> MUST BE HIDDEN
-      rig.setOrientation(0.0, 0.0);
+      for (final angle in [-30.0, 0.0, 20.0, 29.9]) {
+        pitch(angle);
+        expect(visual.root.visible, isFalse, reason: '$angle degrees');
+      }
+      pitch(30);
+      expect(visual.root.visible, isTrue);
+      // Noise around the reveal angle cannot repeatedly show/hide the model.
+      for (final angle in [29.8, 30.2, 29.9, 30.1, 25.0, 20.1, 80.0]) {
+        pitch(angle);
+        expect(visual.root.visible, isTrue, reason: '$angle degrees');
+      }
+      pitch(20);
+      expect(visual.root.visible, isFalse);
+      // Noise around the hide angle must not re-open a dismissed controller.
+      for (final angle in [19.9, 20.1, 19.8, 20.2, 29.9]) {
+        pitch(angle);
+        expect(visual.root.visible, isFalse, reason: '$angle degrees');
+      }
+      pitch(30);
+      expect(visual.root.visible, isTrue);
+      pitch(0);
+      expect(visual.root.visible, isFalse);
+    },
+  );
+
+  test(
+    'reveal gesture uses physical head pitch, pose uses composed pitch',
+    () async {
+      final visual = _Fixture().create(gazeFilterEnabled: true);
+      await visual.ready;
+      addTearDown(visual.dispose);
+      final rig = StereoHeadRig();
+      visual.setState(const VrControllerFeedbackState(connected: true));
+      rig.bodyPitch = 70 * math.pi / 180;
       visual.updatePose(rig);
       expect(
         visual.root.visible,
         isFalse,
-        reason: 'Must be hidden at horizon (90° from feet)',
+        reason: 'stick alone cannot reveal it',
       );
 
-      // 2. Looking up at sky (pitch = -30°, 120° from feet) -> MUST BE HIDDEN
-      rig.setPitch(-30.0 * math.pi / 180.0);
+      rig.setPitch(30 * math.pi / 180);
+      rig.bodyPitch = -1;
       visual.updatePose(rig);
-      expect(visual.root.visible, isFalse, reason: 'Must be hidden looking up');
-
-      // 3. Looking slightly down (pitch = 30°, 60° from feet) -> MUST BE HIDDEN
-      rig.setPitch(30.0 * math.pi / 180.0);
-      visual.updatePose(rig);
-      expect(
-        visual.root.visible,
-        isFalse,
-        reason: 'Must be hidden looking slightly down (60° from feet)',
-      );
-
-      // 4. Looking down at ~20° from feet (pitch = 70° = 1.2217 rad) -> MUST BE VISIBLE!
-      rig.setPitch(70.0 * math.pi / 180.0);
-      visual.updatePose(rig);
+      expect(rig.pitch, lessThan(0));
       expect(
         visual.root.visible,
         isTrue,
-        reason: 'Must be visible at 20° from feet',
+        reason: 'head tilt works despite stick offset',
       );
+      for (final eye in StereoEye.values) {
+        final center = rig
+            .eyeCamera(eye)
+            .worldToScreen(visual.root.position, const Size(400, 400))!;
+        expect(
+          center.dy,
+          closeTo(336, .01),
+          reason: 'model follows rendered eye basis',
+        );
+      }
 
-      // 5. Looking down at 30° from feet (pitch = 60°, within 20° ± 15°) -> VISIBLE
-      rig.setPitch(60.0 * math.pi / 180.0);
-      visual.updatePose(rig);
-      expect(
-        visual.root.visible,
-        isTrue,
-        reason: 'Must be visible at 30° from feet (within tolerance)',
-      );
-
-      // 6. Looking down at 10° from feet (pitch = 80°, within 20° ± 15°) -> VISIBLE
-      rig.setPitch(80.0 * math.pi / 180.0);
-      visual.updatePose(rig);
-      expect(
-        visual.root.visible,
-        isTrue,
-        reason: 'Must be visible at 10° from feet (within tolerance)',
-      );
-
-      // 7. Looking down at 40° from feet (pitch = 50°, outside 20° ± 15°) -> HIDDEN
-      rig.setPitch(50.0 * math.pi / 180.0);
+      rig.setPitch(0);
+      rig.bodyPitch = 1;
       visual.updatePose(rig);
       expect(
         visual.root.visible,
         isFalse,
-        reason: 'Must be hidden at 40° from feet (outside tolerance)',
+        reason: 'physical horizon dismisses it',
       );
+    },
+  );
 
-      // 8. Returning gaze to horizon -> HIDES IMMEDIATELY
-      rig.setPitch(0.0);
+  test('disconnect and manual hide reset the reveal gesture', () async {
+    final visual = _Fixture().create(gazeFilterEnabled: true);
+    await visual.ready;
+    addTearDown(visual.dispose);
+    final rig = StereoHeadRig()..setPitch(30 * math.pi / 180);
+    const shown = VrControllerFeedbackState(connected: true);
+    for (final hidden in const [
+      VrControllerFeedbackState(connected: false),
+      VrControllerFeedbackState(connected: true, visible: false),
+    ]) {
+      visual.setState(shown);
+      rig.setPitch(30 * math.pi / 180);
+      visual.updatePose(rig);
+      expect(visual.root.visible, isTrue);
+      visual.setState(hidden);
+      expect(visual.root.visible, isFalse);
+      visual.updatePose(rig);
+      expect(visual.root.visible, isFalse);
+      rig.setPitch(25 * math.pi / 180);
+      visual.setState(shown);
       visual.updatePose(rig);
       expect(
         visual.root.visible,
         isFalse,
-        reason: 'Must hide when looking back up at horizon',
+        reason: 'new session requires reveal tilt',
       );
+    }
+  });
 
-      // 9. When disconnected, stays hidden even at 20° gaze
-      visual.setState(const VrControllerFeedbackState(connected: false));
-      rig.setPitch(70.0 * math.pi / 180.0);
+  test(
+    'explicit legacy window keeps angles from feet and composed gaze',
+    () async {
+      final visual = _Fixture().create(
+        gazeFilterEnabled: true,
+        targetGazeAngleDeg: 20,
+        gazeAngleToleranceDeg: 15,
+      );
+      await visual.ready;
+      addTearDown(visual.dispose);
+      final rig = StereoHeadRig();
+      visual.setState(const VrControllerFeedbackState(connected: true));
+      rig.setPitch(30 * math.pi / 180);
       visual.updatePose(rig);
-      expect(
-        visual.root.visible,
-        isFalse,
-        reason: 'Must not show if disconnected',
-      );
-
-      // 10. When visible flag is false, stays hidden even at 20° gaze
-      visual.setState(
-        const VrControllerFeedbackState(connected: true, visible: false),
-      );
+      expect(visual.root.visible, isFalse);
+      rig.setPitch(0);
+      rig.bodyPitch = 70 * math.pi / 180;
       visual.updatePose(rig);
-      expect(
-        visual.root.visible,
-        isFalse,
-        reason: 'Must not show if visible is false',
-      );
-
-      visual.dispose();
+      expect(visual.root.visible, isTrue);
+      rig.bodyPitch = 50 * math.pi / 180;
+      visual.updatePose(rig);
+      expect(visual.root.visible, isFalse);
     },
   );
 }
@@ -591,9 +701,13 @@ class _Fixture {
   VrControllerFeedbackVisuals create({
     Future<Mesh?> Function(VrRetainedSurface)? artwork,
     bool gazeFilterEnabled = false,
+    double? targetGazeAngleDeg,
+    double? gazeAngleToleranceDeg,
   }) => VrControllerFeedbackVisuals(
     parent,
     gazeFilterEnabled: gazeFilterEnabled,
+    targetGazeAngleDeg: targetGazeAngleDeg,
+    gazeAngleToleranceDeg: gazeAngleToleranceDeg,
     meshBuilder: (material, {required round}) {
       materials.add(material);
       return Mesh.primitives(primitives: const []);

@@ -9,6 +9,7 @@ import 'package:vrlizate/vrlizate.dart'
         VrSpatialInputState;
 
 import 'stereo_head_rig.dart';
+import 'vr_stick_look.dart';
 
 /// CPU-only input integration shared by the widget and its regression tests.
 /// Pick callbacks must restrict hits to the currently interactive scene/modal.
@@ -121,10 +122,11 @@ class VrSceneInputController {
       // absolute (gravity-referenced) there and would erase a stick delta on
       // the next sample; accumulate it as a composed body offset instead.
       rig.rotate(-state.lookX * 1.8 * step, 0);
-      rig.bodyPitch = (rig.bodyPitch - state.lookY * 1.5 * step).clamp(
-        -1.45,
-        1.45,
-      );
+      rig.bodyPitch =
+          (rig.bodyPitch + VrStickLook.pitchDelta(state.lookY, step)).clamp(
+            -1.45,
+            1.45,
+          );
     }
     if (!locomotionEnabled || (state.moveX == 0 && state.moveY == 0)) return;
     state.writeMovement(

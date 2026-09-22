@@ -7,6 +7,64 @@ import 'package:vrlizate_scene/src/vr_scene_input_controller.dart';
 import 'package:vrlizate_scene/vrlizate_scene.dart';
 
 void main() {
+  for (final source in [VrInputSource.remotePhone, VrInputSource.gamepad]) {
+    test('$source sideways look requires deliberate vertical travel', () {
+      final rig = StereoHeadRig();
+      final input = VrSceneInputController(
+        rig: rig,
+        pick: (_) => null,
+        activate: (_) {},
+        recenter: () {},
+      );
+      void look(double y) {
+        input.handleEvent(
+          VrInputEvent(
+            type: VrInputType.navigate,
+            source: source,
+            data: source == VrInputSource.gamepad
+                ? {'stick': VrGamepadStick.right, 'x': 1.0, 'y': y}
+                : {'lookX': 1.0, 'lookY': y},
+          ),
+        );
+        input.update(.1);
+      }
+
+      for (final y in [-.3, -.15, 0.0, .15, .3]) {
+        look(y);
+        expect(rig.bodyPitch, 0);
+      }
+      expect(rig.cameraRig.yaw, closeTo(-.9, 1e-6));
+      look(.3001);
+      expect(
+        rig.bodyPitch.abs(),
+        lessThan(.00002),
+        reason: 'Crossing the dead zone must not jump the camera.',
+      );
+      rig.bodyPitch = 0;
+      look(.65);
+      expect(rig.bodyPitch, closeTo(-.045, 1e-9));
+      look(-.65);
+      expect(rig.bodyPitch, closeTo(0, 1e-9));
+      look(1);
+      expect(rig.bodyPitch, closeTo(-.09, 1e-9));
+      rig.setPitch(.2);
+      expect(rig.pitch, closeTo(.11, 1e-9));
+      for (final eye in StereoEye.values) {
+        expect(
+          (rig.eyeCamera(eye).forward - rig.gazeRay.direction).length,
+          lessThan(1e-6),
+        );
+      }
+    });
+  }
+
+  test('look pitch rejects invalid input and bounds resumed-frame travel', () {
+    expect(VrStickLook.pitchDelta(double.nan, .1), 0);
+    expect(VrStickLook.pitchDelta(1, double.infinity), 0);
+    expect(VrStickLook.pitchDelta(1, -.1), 0);
+    expect(VrStickLook.pitchDelta(10, 10), closeTo(-.09, 1e-9));
+  });
+
   test('one consumed action reaches only one scene; aliases do not select', () {
     final arbiter = VrInputArbiter();
     final node = Node(name: 'action');

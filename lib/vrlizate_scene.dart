@@ -11,6 +11,7 @@ library;
 
 export 'src/quality_preset.dart';
 export 'src/stereo_head_rig.dart';
+export 'src/vr_stick_look.dart';
 export 'src/vr_viewer_profile.dart';
 export 'src/vr_gpu_resource_gate.dart';
 export 'src/stereo_scene_view.dart';

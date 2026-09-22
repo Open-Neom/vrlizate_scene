@@ -1,7 +1,16 @@
 # Changelog
 
-## 0.5.0 — Unreleased / Sin publicar
+## 0.5.0 - 2026-09-22
 
+- Use engine build/raster timings and a refresh-rate budget for sustained quality
+  reduction; pause/reset evaluation with lifecycle and visibility. Isolate the
+  reticle repaint and retain its pointer callback.
+- Reveal connected controller feedback at 30° physical downward head pitch and
+  hide below 20°. Stick-controlled camera pitch does not trigger visibility;
+  explicit legacy gaze-window parameters retain their previous behavior.
+
+- Require Flutter 3.47.0 or newer, matching the flutter_scene dependency's
+  minimum supported SDK.
 - Respect persistent connected-controller dwell suppression for scene controls
   and system HOME; regression coverage preserves hover and fresh resume.
 - Re-export world-panel text specifications/builders for consistent readable
