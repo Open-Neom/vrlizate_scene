@@ -33,6 +33,48 @@ class StereoHeadRig implements RotationTarget {
   /// The underlying vrlizate camera rig (position, rotation, IPD, FOV).
   final CameraRig cameraRig;
 
+  final vm.Vector3 _physicalTranslation = vm.Vector3.zero();
+  Object? _spatialOwner;
+  void Function()? _spatialRecenter;
+  bool _preserveSpatialRoll = false;
+
+  /// Measured displacement relative to the current tracking origin. Never
+  /// derived from joystick input or an accelerometer double integration.
+  vm.Vector3 get physicalTranslation => _physicalTranslation.clone();
+
+  /// Virtual locomotion anchor, separate from measured physical displacement.
+  /// eyeCenter remains mutable for existing vehicle/joystick integrations.
+  vm.Vector3 get locomotionOrigin => cameraRig.position - _physicalTranslation;
+
+  /// Internal ownership boundary used by the optional spatial controller.
+  /// A replaced controller cannot clear a newer controller's recenter hook.
+  void attachSpatialOwner(Object owner, void Function() recenter) {
+    _spatialOwner = owner;
+    _spatialRecenter = recenter;
+  }
+
+  void detachSpatialOwner(Object owner) {
+    if (!identical(owner, _spatialOwner)) return;
+    _spatialOwner = null;
+    _spatialRecenter = null;
+    // Bake the last measured displacement into the virtual anchor. Releasing
+    // tracking must not snap the camera back to its pre-tracking position.
+    _physicalTranslation.setZero();
+  }
+
+  /// Apply one measured pose. [rotation] uses the existing inverse vector_math
+  /// rig convention; the spatial bridge converts conventional ARCore XYZW.
+  /// Repeated absolute samples do not repeatedly add their displacement.
+  void applySpatialPose({
+    required vm.Vector3 translationOffset,
+    required vm.Quaternion rotation,
+  }) {
+    cameraRig.position.add(translationOffset - _physicalTranslation);
+    _physicalTranslation.setFrom(translationOffset);
+    cameraRig.rotation = rotation;
+    _preserveSpatialRoll = true;
+  }
+
   /// Vehicle/platform heading independent of the viewer's local head pose.
   /// Recentring the head must not rotate the car or reset its world heading.
   double bodyYaw = 0;
@@ -81,10 +123,23 @@ class StereoHeadRig implements RotationTarget {
   set ipd(double value) => cameraRig.ipd = value;
 
   @override
-  void rotate(double dTheta, double dPhi) => cameraRig.rotate(dTheta, dPhi);
+  void rotate(double dTheta, double dPhi) {
+    if (_spatialOwner != null) {
+      // With absolute VIO, manual look belongs to virtual locomotion. The
+      // tracker uses its proxy target and never enters this branch.
+      bodyYaw += dTheta;
+      bodyPitch = (bodyPitch + dPhi).clamp(-1.45, 1.45);
+    } else {
+      cameraRig.rotate(dTheta, dPhi);
+    }
+  }
 
   @override
-  void reset() => cameraRig.reset();
+  void reset() {
+    cameraRig.reset();
+    _physicalTranslation.setZero();
+    _spatialRecenter?.call();
+  }
 
   /// Sets the absolute gaze orientation (yaw, pitch) in radians.
   @override
@@ -97,21 +152,90 @@ class StereoHeadRig implements RotationTarget {
 
   /// Recenters the horizontal head heading (Yaw = 0°).
   @override
-  void recenter() => cameraRig.recenter();
+  void recenter() {
+    final spatialRecenter = _spatialRecenter;
+    if (spatialRecenter != null) {
+      spatialRecenter();
+    } else {
+      cameraRig.recenter();
+    }
+  }
 
-  /// World-space midpoint between the eyes.
+  /// World-space midpoint between the eyes, including physical translation.
+  /// Assigning/mutating it changes the virtual anchor while retaining the
+  /// current physical offset; the next identical pose therefore cannot drift.
   vm.Vector3 get eyeCenter => cameraRig.position;
   set eyeCenter(vm.Vector3 value) => cameraRig.position = value;
 
   /// World-space head orientation quaternion, including [bodyYaw] and
-  /// [bodyPitch]. Same yaw-then-pitch composition as [CameraRig], so the
-  /// horizon stays level (zero roll).
+  /// [bodyPitch]. Legacy input keeps its level horizon; an optional spatial
+  /// pose retains measured physical roll when composing virtual look.
   vm.Quaternion get orientation {
-    if (!_hasBodyOffset) return cameraRig.headTransform.rotation;
-    final yawQ = vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), yaw);
-    final pitchQ = vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), pitch);
-    return (pitchQ * yawQ)..normalize();
+    if (!_hasBodyOffset) {
+      return _preserveSpatialRoll
+          ? cameraRig.headTransform.rotation.clone()
+          : cameraRig.headTransform.rotation;
+    }
+    if (_preserveSpatialRoll) {
+      // Extract the roll residual from the physical quaternion, then retain
+      // it while composing virtual yaw/pitch once. The old yaw/pitch-only
+      // branch remains unchanged for scenes which never opt into VIO.
+      final physical = cameraRig.rotation;
+      if (_spatialBodyOrientation == null ||
+          _spatialHeadX != physical.x ||
+          _spatialHeadY != physical.y ||
+          _spatialHeadZ != physical.z ||
+          _spatialHeadW != physical.w ||
+          _spatialBodyYaw != bodyYaw ||
+          _spatialBodyPitch != bodyPitch) {
+        final headYaw = vm.Quaternion.axisAngle(
+          vm.Vector3(0, 1, 0),
+          cameraRig.yaw,
+        );
+        final headPitch = vm.Quaternion.axisAngle(
+          vm.Vector3(1, 0, 0),
+          cameraRig.pitch,
+        );
+        final base = (headPitch * headYaw)..normalize();
+        final inverseBase = vm.Quaternion(-base.x, -base.y, -base.z, base.w);
+        final virtualYaw = vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), yaw);
+        final virtualPitch = vm.Quaternion.axisAngle(
+          vm.Vector3(1, 0, 0),
+          pitch,
+        );
+        _spatialBodyOrientation =
+            (physical * inverseBase * virtualPitch * virtualYaw)..normalize();
+        _spatialHeadX = physical.x;
+        _spatialHeadY = physical.y;
+        _spatialHeadZ = physical.z;
+        _spatialHeadW = physical.w;
+        _spatialBodyYaw = bodyYaw;
+        _spatialBodyPitch = bodyPitch;
+      }
+      return _spatialBodyOrientation!.clone();
+    }
+    final currentYaw = yaw;
+    final currentPitch = pitch;
+    if (_bodyOrientation == null ||
+        _bodyOrientationYaw != currentYaw ||
+        _bodyOrientationPitch != currentPitch) {
+      final yawQ = vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), currentYaw);
+      final pitchQ = vm.Quaternion.axisAngle(vm.Vector3(1, 0, 0), currentPitch);
+      _bodyOrientation = (pitchQ * yawQ)..normalize();
+      _bodyOrientationYaw = currentYaw;
+      _bodyOrientationPitch = currentPitch;
+    }
+    // Both eyes and input rays read the same pose repeatedly in one frame.
+    // Return owned storage so caller mutations cannot corrupt the cached pose.
+    return _bodyOrientation!.clone();
   }
+
+  vm.Quaternion? _bodyOrientation;
+  double? _bodyOrientationYaw;
+  double? _bodyOrientationPitch;
+  vm.Quaternion? _spatialBodyOrientation;
+  double? _spatialHeadX, _spatialHeadY, _spatialHeadZ, _spatialHeadW;
+  double? _spatialBodyYaw, _spatialBodyPitch;
 
   /// World-space gaze direction (−Z head axis, rotated).
   vm.Vector3 get forward => !_hasBodyOffset

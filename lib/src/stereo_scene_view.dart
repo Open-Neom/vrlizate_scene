@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -10,6 +11,7 @@ import 'package:vrlizate/vrlizate.dart'
         CameraRig,
         GazePointer,
         HeadTracker,
+        RotationTarget,
         InertialTapDetector,
         VrSensorCapabilities,
         VrInputArbiter,
@@ -22,6 +24,7 @@ import 'vr_frame_quality.dart';
 import 'vr_gpu_resource_gate.dart';
 import 'simulated_hand_visuals.dart';
 import 'stereo_head_rig.dart';
+import 'vr_spatial_tracking.dart';
 import 'vr_look.dart';
 import 'vr_world_navigation_scope.dart';
 import 'vr_input_session_scope.dart';
@@ -158,6 +161,9 @@ class StereoSceneView extends StatefulWidget {
 
   /// External head tracker; when omitted an owned one is created and
   /// started/stopped with this widget's lifecycle.
+  ///
+  /// Providing a custom tracker opts out of [VrSpatialTrackingScope]: its
+  /// target ownership is external and must not compete with absolute VIO.
   final HeadTracker? headTracker;
 
   /// Whether touch-drag rotates the view as a gyroscope fallback.
@@ -214,6 +220,27 @@ class StereoSceneView extends StatefulWidget {
   State<StereoSceneView> createState() => _StereoSceneResourceGateState();
 }
 
+/// A stable HeadTracker target, so changing scopes never starts a second IMU
+/// backend. Spatial tracking observes the IMU for fallback without adding it to
+/// a currently measured camera orientation.
+class _SpatialRotationTarget implements RotationTarget {
+  _SpatialRotationTarget(this.rig);
+  final StereoHeadRig rig;
+  VrSpatialTrackingController? spatial;
+  RotationTarget get target => spatial ?? rig;
+  @override
+  void rotate(double yaw, double pitch) => target.rotate(yaw, pitch);
+  @override
+  void setOrientation(double yaw, double pitch) =>
+      target.setOrientation(yaw, pitch);
+  @override
+  void setPitch(double pitch) => target.setPitch(pitch);
+  @override
+  void recenter() => target.recenter();
+  @override
+  void reset() => target.reset();
+}
+
 class _StereoSceneResourceGateState extends State<StereoSceneView> {
   @override
   Widget build(BuildContext context) => VrGpuResourceGate(
@@ -242,7 +269,16 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         convergenceDistance: view.convergenceDistance,
       );
   late final HeadTracker _headTracker =
-      view.headTracker ?? HeadTracker(target: _rig);
+      view.headTracker ?? HeadTracker(target: _rotationTarget);
+  late final _SpatialRotationTarget _rotationTarget = _SpatialRotationTarget(
+    _rig,
+  );
+  VrSpatialTrackingController? _spatial;
+  VrSpatialTrackingScope? _spatialScope;
+  bool _ownedHeadTrackerStarted = false;
+  bool _appResumed =
+      WidgetsBinding.instance.lifecycleState == null ||
+      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
   late final GazePointer _gaze = GazePointer(
     cameraRig: _rig.cameraRig,
     dwellDuration: view.gazeDwellSeconds,
@@ -275,10 +311,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       _activateGazeNode(node);
       if (view.enableHaptics) HapticFeedback.selectionClick();
     },
-    recenter: () {
-      _headTracker.recenter();
-      _rig.recenter();
-    },
+    recenter: _recenter,
     isSystemNode: (node) => node.name == _worldHomeNodeName,
   );
   final _PointerRepaint _pointerRepaint = _PointerRepaint();
@@ -329,15 +362,16 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     }
     // Native desktop has no sensors_plus motion backend. Keep the tracker for
     // touch/recenter and preserve explicitly supplied custom sensor streams.
-    if (_headTracker.canStart) _headTracker.start();
+    // Preserve custom tracker ownership. Owned trackers are gated by route,
+    // TickerMode and lifecycle in didChangeDependencies below.
+    if (view.headTracker != null && _headTracker.canStart) _headTracker.start();
 
     // Zero-latency temple/visor tap trigger
     if (view.enableTempleTap && VrSensorCapabilities.supportsDeviceMotion) {
       _tapDetector = InertialTapDetector(
         onSingleTap: _handleTempleTap,
         onDoubleTap: () {
-          _headTracker.recenter();
-          _rig.recenter();
+          _recenter();
           if (view.enableHaptics) HapticFeedback.mediumImpact();
         },
       )..start();
@@ -466,6 +500,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _syncSpatialTracking();
     _syncQualityMonitoring();
     _updateActiveArbiter();
     _updateFeedbackSource();
@@ -532,11 +567,75 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       view.look!.applyToScene(view.scene, _preset ?? VrQualityPreset.medium);
     }
     _syncQualityMonitoring();
+    _syncSpatialTracking();
+  }
+
+  void _recenter() {
+    _headTracker.recenter();
+    // Owned trackers reach the rig through the proxy, exactly once. An
+    // external tracker may have an unrelated target and retains legacy use.
+    if (view.headTracker != null) _rig.recenter();
+  }
+
+  void _syncSpatialTracking() {
+    final scope = VrSpatialTrackingScope.maybeOf(context);
+    final sceneActive =
+        _appResumed &&
+        TickerMode.valuesOf(context).enabled &&
+        (ModalRoute.isCurrentOf(context) ?? true);
+    if (view.headTracker == null) {
+      if (sceneActive && !_ownedHeadTrackerStarted && _headTracker.canStart) {
+        _headTracker.start();
+        _ownedHeadTrackerStarted = true;
+      } else if (!sceneActive && _ownedHeadTrackerStarted) {
+        _headTracker.stop();
+        _ownedHeadTrackerStarted = false;
+      }
+    }
+    final active =
+        scope != null &&
+        scope.enabled &&
+        view.headTracker == null &&
+        sceneActive;
+    final previous = _spatialScope;
+    if (active &&
+        _spatial != null &&
+        identical(previous?.source, scope.source) &&
+        previous?.cameraToEyeTranslation == scope.cameraToEyeTranslation &&
+        previous?.cameraToEyeRotation == scope.cameraToEyeRotation) {
+      return;
+    }
+    _rotationTarget.spatial = null;
+    final old = _spatial;
+    _spatial = null;
+    _spatialScope = null;
+    if (old != null) unawaited(old.detach());
+    if (!active) return;
+    final controller = VrSpatialTrackingController(
+      rig: _rig,
+      source: scope.source,
+      cameraToEyeTranslation: scope.cameraToEyeTranslation,
+      cameraToEyeRotation: scope.cameraToEyeRotation,
+    );
+    _spatial = controller;
+    _spatialScope = scope;
+    _rotationTarget.spatial = controller;
+    unawaited(controller.attach());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appResumed = state == AppLifecycleState.resumed;
+    if (mounted) _syncSpatialTracking();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _rotationTarget.spatial = null;
+    final spatial = _spatial;
+    _spatial = null;
+    if (spatial != null) unawaited(spatial.detach());
     _qualityMonitor.dispose();
     _feedbackSource?.removeListener(_onFeedbackChanged);
     _feedbackSource = null;
@@ -559,6 +658,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
 
   void _tick(Duration elapsed, double dt) {
+    _spatial?.tick();
     final systemGazeEnabled = _worldNavigation != null;
     _gazeLifecycle.beforeTick(
       _gaze,
@@ -588,8 +688,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     // that controller.
     if (view.zenithRecenter) {
       if (_zenith.update(_rig.pitch, dt)) {
-        _headTracker.recenter();
-        _rig.recenter();
+        _recenter();
         if (view.enableHaptics) {
           HapticFeedback.mediumImpact();
         }
@@ -808,8 +907,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
             : null,
         onDoubleTap: view.doubleTapToRecenter
             ? () {
-                _headTracker.recenter();
-                _rig.recenter();
+                _recenter();
                 if (view.enableHaptics) {
                   HapticFeedback.mediumImpact();
                 }
