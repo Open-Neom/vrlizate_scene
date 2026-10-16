@@ -21,6 +21,9 @@
 - Add `VrSceneRegion` for near detail, far proxy and detached visual regions,
   with bounds-based distance and hysteresis. Rendering, data retention and
   gameplay state keep separate lifecycles.
+- Add procedural `VrAvatarNode` (`human`, `robot`, `orb`, `fox`, `axolotl`, `sprout`) with shared GPU geometry, instanced submission and near/far LOD.
+- Add `VrActorAnimation` for semantic crossfading (`idle`, `walk`, `wave`) of imported GLB clips and `VrGlbTemplateCache` for bounded LRU template reuse.
+- Add `VrStereoSceneLayers` and `VrSceneHomeControlLifecycle` for composable stereo scene overlays and world-space HOME control lifecycle.
 
 ## 0.5.0 - 2026-09-22
 
