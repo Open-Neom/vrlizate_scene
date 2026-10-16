@@ -25,6 +25,31 @@ experimental y requiere integración nativa y validación física.
 
 ## Requirements and installation
 
+`StereoSceneView(fixedFoveation: const VrFixedFoveation(), ...)` opts into an
+experimental spatial-resolution trial. Each eye has a lower-resolution full
+view and a projection-matched sharp center, drawn in the same frame through
+one `SceneView`. The default targets contain about 72% of the uniform color
+pixels, but four views instead of two add geometry, shadows and composition
+work. Benchmark before selecting it for a device; it does not request 120 Hz.
+Use plain tonemapping/fog without viewport-local effects (vignette, lens warp,
+bloom, AO, SSR, depth of field), which need a crop-aware compositor. The border
+is a rectangular resolution transition; no blur or temporal reuse is applied.
+Leave `fixedFoveation` null for the existing uniform stereo path. The app's
+OpenWorld trial offers a toggle in Puerto Neom and Bosque for A/B comparison.
+
+`VrDevicePerformanceCatalog.match(manufacturer: ..., model: ...)` resolves a
+small, explicit phone catalog. Hosts can inject the result with
+`VrDevicePerformanceScope(profile: profile, child: app)`. `StereoSceneView`
+uses it only for initial quality when the scene has no explicit preset. The
+existing frame-quality monitor still adapts after startup. Unknown models keep
+the normal fallback; a rebuild does not reset an adapted scene.
+
+The initial entries cover Motorola Edge 20 Lite (`low`) and explicit Samsung
+Galaxy S25 Ultra SKU aliases (`medium`). A profile's `displayMaxHz` describes
+the panel ceiling, not current refresh or achievable FPS. Detection is supplied
+by the host; the SDK does not read unique device identifiers, force display
+modes, or treat a benchmark from one experience as a guarantee for another.
+
 `VrRetainedSceneAdapter` converts a core scene graph into retained GPU nodes,
 geometry and materials. Call `sync()` after simulation updates and dispose the
 adapter with its owner. It does not rasterize the entire world into a texture.
@@ -58,9 +83,9 @@ when GPU rendering itself is unavailable.
 - This release was tested locally using Flutter
   `3.48.0-1.0.pre-371` / Dart `3.14.0-147.0.dev`. This records the tested
   environment; it is not a claim that every listed platform has been validated.
-- The release depends on hosted `vrlizate ^1.12.0` and
-  `vrlizate_widgets ^0.3.0`. Those versions must be available before publishing
-  or resolving this package from pub.dev.
+- The release depends on hosted `vrlizate ^1.12.0`,
+  `vrlizate_widgets ^0.3.0` and `vrlizate_avatar ^0.1.0`. Those versions must be
+  available before publishing or resolving this package from pub.dev.
 
 ```sh
 flutter pub add vrlizate_scene
@@ -128,6 +153,99 @@ package.
   It does not start a camera or consume measured hand landmarks. Set it to
   `false` when those visuals are not needed. Their meshes do not intercept gaze.
 
+## Procedural avatars
+
+`VrAvatarNode` renders a `VrAvatarAppearance` from `vrlizate_avatar` directly
+through Scene. The available species are `human`, `robot`, `orb`, `fox`,
+`axolotl` and `sprout`; each has a distinct silhouette. Appearance parameters
+include opaque `bodyColorArgb` / `accentColorArgb`, `heightMeters` (1–2.2),
+`headScale` (0.8–1.25), `featureScale` (0.6–1.4), and the `solid`, `spots` or
+`stripes` pattern. Feature scale changes ears, gills, leaves, antenna or fins
+according to species. The legacy `VrAvatarStyle` is not the species API.
+
+```dart
+import 'package:vrlizate_avatar/vrlizate_avatar.dart';
+import 'package:vrlizate_scene/vrlizate_scene.dart';
+
+final avatar = VrAvatarNode(
+  appearance: VrAvatarAppearance(
+    species: VrAvatarSpecies.axolotl,
+    bodyColorArgb: 0xff8258c9,
+    accentColorArgb: 0xff7ef0dd,
+    heightMeters: 1.7,
+    pattern: VrAvatarPattern.spots,
+  ),
+  detail: VrAvatarDetail.near,
+  animateIdle: true,
+);
+// Attach avatar.root to an existing world/placement node owned by the host.
+```
+
+The local origin is at the feet, +Y points up and **+Z points forward**. These
+are authored Scene primitives, so do not apply a glTF import coordinate flip.
+The conservative full silhouette, including ears/leaves, fits the requested
+height and a horizontal envelope of at most 2.8 m at any yaw. `plan.bounds`
+and `plan.horizontalRadius` support placement; Scene 0.24.3 does not include
+instanced components in `Node.combinedLocalBounds`, although their render items
+have aggregate bounds for normal frustum culling.
+
+The owner calls `updateAppearance(value)` on semantic edits, `tick(dt)` only
+while active, and `dispose()` when finished. `setDetail(VrAvatarDetail.far)`
+uses a coarser rounded mesh and omits small glints/pattern/frill details.
+The renderer does not choose distances itself. Home selects near detail below
+8 m, returns to far at 12 m, mounts the showcase below 18 m and detaches it at
+22 m. These hysteresis thresholds avoid repeated switching at a boundary.
+
+Geometry is shared across avatars: three unit shapes at two detail levels,
+with at most six cached GPU meshes. Each avatar owns four PBR materials shared
+by its pieces, grouped as `InstancedMesh` submissions by shape/material. Color
+edits change material factors; height/proportion edits update instance matrices
+without recreating geometry, materials, nodes or groups. Species, pattern or
+LOD changes can rebuild the small instance groups using cached meshes.
+`instanceCount`, `triangleCount` and `batchCount` expose authored budgets;
+`batchCount` is not a measured GPU draw-call count in stereo/shadow passes.
+
+Appearance, profile identity, persistence and authorization belong to the host.
+The renderer installs no state manager, timers or per-frame notifications.
+Its optional idle is a slight yaw sway, not skeletal walking, hand tracking or
+network synchronization. This addition does not enable multiplayer or establish
+a measured FPS improvement. The static `.vrlw` import profile is unchanged.
+
+## Animated GLB actors and template reuse
+
+`VrActorAnimation(actor: importedRoot)` blends real GLB clips through semantic
+`idle`, `walk` and `wave` actions, mapped by default to `Idle`, `Walking`, `Wave`.
+`play(VrActorAction.walk)` crossfades over 0.25 s; a completed wave returns to idle.
+Use a separate parent node for world placement and scale so authored channels
+do not overwrite it. The source must contain all three clips (names configurable).
+
+Call `tick(dt)` once per scene tick **before** Scene's animation pre-pass; it only
+updates blend weights. Scene advances clip time and applies the pose. Do not
+advance the clips a second time or rebuild SINT state per bone/frame. `pause`,
+`resume`, `seek` and `dispose` preserve or release the owned clips explicitly.
+`onActionChanged` reports only semantic transitions. `HomeShowcase` demonstrates
+a `SceneTickListener` with proximity suspension and proper disposal.
+
+`VrGlbTemplateCache(maxEntries: 2)` provides bounded LRU reuse of bundled GLB
+imports. `instantiate(assetPath, maxTextureSize: ...)` returns a distinct node
+tree with independent skin bindings, morph weights and animation playback;
+retained concurrent requests for the same path/texture-size pair share one
+import. Register `VrActorAnimation` on each returned clone, never on a template.
+Geometry, textures, parsed animation curves and materials remain shared and
+must be treated as **immutable**. For individual material edits, replace the
+clone's material slots with instance-owned materials first.
+
+The constructor defaults to four entries; Home explicitly uses two, for its
+robot and lounge assets. The limit counts retained templates, including pending
+imports, not GPU bytes or live clones. `clear()` or `invalidate(...)` releases
+cache references without invalidating existing instances; pending completion
+does not reinsert an evicted entry. Home calls `HomeShowcase.clearAssetCache()`
+on `didHaveMemoryPressure`. Resources still referenced by mounted or retained
+clones remain alive, so clearing is not a promise of immediate GPU reclamation.
+Other hosts should clear on memory pressure and `dispose()` a session-owned
+cache when finished; dispose also prevents pending imports from returning a
+new instance after the owner has gone away.
+
 ## Quality and measured limits
 
 | Preset | Resolution multiplier | Requested AA | Bloom |
@@ -170,9 +288,10 @@ unit tests validate logic and geometry, not a frame-rate guarantee.
 
 ## Development
 
-The repository's `pubspec_overrides.yaml` uses sibling checkouts of
-`../vrlizate` and `../vrlizate_widgets` for coordinated development. It is
-excluded from the published archive. Consumers resolve hosted dependencies.
+The repository's `pubspec_overrides.yaml` uses sibling checkouts, including
+`../vrlizate`, `../vrlizate_widgets` and `../vrlizate_avatar`, for coordinated
+development. It is excluded from the published archive. Consumers resolve
+hosted dependencies.
 
 ```sh
 flutter pub get
@@ -183,7 +302,9 @@ flutter pub publish --dry-run
 
 Tests cover physical disparity signs, convergence, rotated panel corners,
 reticle/ray consistency, world navigation, gaze suppression and simulated-hand
-picking/allocation behavior. GPU runtime verification is a separate step; use
+picking/allocation behavior. Avatar CPU tests check real Scene winding,
+normals, bounds at extreme proportions, stable instance topology, LOD budgets
+and template-clone isolation. GPU runtime verification is a separate step; use
 `flutter run --profile` in a host application.
 
 ## Español

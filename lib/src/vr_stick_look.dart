@@ -1,8 +1,9 @@
 /// Shared vertical look response for Home and rendered scenes.
 /// This applies only to a look stick, never to physical headset pitch or aim.
 abstract final class VrStickLook {
-  /// Deliberate vertical travel is required even during horizontal movement.
-  static const verticalDeadZone = 0.30;
+  /// Ignore small cross-axis noise without discarding gentle, already-shaped
+  /// phone stick or motion-look input.
+  static const verticalDeadZone = 0.05;
 
   /// Full travel turns about 52 degrees per second; the response above the
   /// dead zone ramps continuously from zero instead of jumping at its edge.

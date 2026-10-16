@@ -1,4 +1,5 @@
 import 'dart:ui' show Size;
+import 'dart:math' as math;
 
 import 'package:flutter_scene/scene.dart' show Node;
 import 'package:flutter_test/flutter_test.dart';
@@ -7,8 +8,49 @@ import 'package:vrlizate_scene/src/vr_scene_input_controller.dart';
 import 'package:vrlizate_scene/vrlizate_scene.dart';
 
 void main() {
+  test('right pitch coexists with left edge turning; right yaw overrides', () {
+    final rig = StereoHeadRig();
+    final input = VrSceneInputController(
+      rig: rig,
+      pick: (_) => null,
+      activate: (_) {},
+      recenter: () {},
+    );
+    void frame({double lookX = 0}) {
+      input.handleEvent(
+        VrInputEvent(
+          type: VrInputType.navigate,
+          source: VrInputSource.remotePhone,
+          data: {
+            'x': 0.0,
+            'y': -1.0,
+            'moveAtEdge': true,
+            'lookX': lookX,
+            'lookY': .15,
+          },
+        ),
+      );
+      input.update(1 / 60);
+    }
+
+    for (var i = 0; i < 300; i++) {
+      frame();
+    }
+    expect(rig.bodyYaw.abs(), closeTo(math.pi, 1e-5));
+    expect(rig.bodyPitch, lessThan(-.3));
+    expect(rig.cameraRig.yaw, 0);
+    expect(rig.eyeCenter.z, greaterThan(10));
+    input.reset();
+    final yaw = rig.bodyYaw;
+    for (var i = 0; i < 90; i++) {
+      frame(lookX: .2);
+    }
+    expect(rig.bodyYaw, yaw);
+    expect(rig.cameraRig.yaw, lessThan(-.4));
+  });
+
   for (final source in [VrInputSource.remotePhone, VrInputSource.gamepad]) {
-    test('$source sideways look requires deliberate vertical travel', () {
+    test('$source look filters noise and preserves gentle vertical travel', () {
       final rig = StereoHeadRig();
       final input = VrSceneInputController(
         rig: rig,
@@ -29,21 +71,21 @@ void main() {
         input.update(.1);
       }
 
-      for (final y in [-.3, -.15, 0.0, .15, .3]) {
+      for (final y in [-.05, -.025, 0.0, .025, .05]) {
         look(y);
         expect(rig.bodyPitch, 0);
       }
       expect(rig.cameraRig.yaw, closeTo(-.9, 1e-6));
-      look(.3001);
+      look(.0501);
       expect(
         rig.bodyPitch.abs(),
         lessThan(.00002),
         reason: 'Crossing the dead zone must not jump the camera.',
       );
       rig.bodyPitch = 0;
-      look(.65);
+      look(.525);
       expect(rig.bodyPitch, closeTo(-.045, 1e-9));
-      look(-.65);
+      look(-.525);
       expect(rig.bodyPitch, closeTo(0, 1e-9));
       look(1);
       expect(rig.bodyPitch, closeTo(-.09, 1e-9));
@@ -63,6 +105,18 @@ void main() {
     expect(VrStickLook.pitchDelta(1, double.infinity), 0);
     expect(VrStickLook.pitchDelta(1, -.1), 0);
     expect(VrStickLook.pitchDelta(10, 10), closeTo(-.09, 1e-9));
+  });
+
+  test('gentle BLE look tilts upward without changing maximum pitch speed', () {
+    // This lies below the former DemoRunner gate and far below the former
+    // vertical dead zone, but is intentional motion-look input after shaping.
+    const axis = 8 / 127;
+    final delta = VrStickLook.pitchDelta(axis, .1);
+    expect(delta, lessThan(0));
+    expect(delta.abs(), lessThan(.002));
+    expect(VrStickLook.pitchDelta(-axis, .1), closeTo(-delta, 1e-12));
+    expect(VrStickLook.pitchDelta(0, .1), 0);
+    expect(VrStickLook.pitchDelta(1, .1), closeTo(-.09, 1e-9));
   });
 
   test('one consumed action reaches only one scene; aliases do not select', () {

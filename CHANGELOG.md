@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Integrate left-stick rim turning into walking scenes using virtual body yaw,
+  preserving tracked head motion and the requested travel direction. Expose
+  `edgeTurnEnabled`; seated/custom locomotion stays independent. Clear input
+  on suspension/recenter so an old turn cannot resume with the scene.
+
+- Add an exact-model `VrDevicePerformanceCatalog` and host-injected
+  `VrDevicePerformanceScope` for startup quality. Explicit scene quality takes
+  precedence; subsequent adaptive quality is preserved. Catalogued panel Hz
+  are capabilities, not measured application FPS.
+
+- Add opt-in `VrFixedFoveation` to `StereoSceneView`: lower-resolution full-eye
+  backgrounds plus projection-matched sharp centers, rendered together in one
+  frame. Defaults reduce nominal color-target pixels to 72%; extra geometry,
+  shadow and composition passes require device A/B testing. No temporal reuse,
+  hardware VRS or eye tracking. Viewport-local effects need a separate adapter.
+
+- Add `VrSceneRegion` for near detail, far proxy and detached visual regions,
+  with bounds-based distance and hysteresis. Rendering, data retention and
+  gameplay state keep separate lifecycles.
+
 ## 0.5.0 - 2026-09-22
 
 - Use engine build/raster timings and a refresh-rate budget for sustained quality

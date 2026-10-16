@@ -379,7 +379,11 @@ void main() {
       expect(visual.root.raycastable, isFalse);
       for (final node in visual.root.children) {
         expect(node.raycastable, isFalse, reason: node.name);
-        expect(node.castsShadows, isFalse, reason: node.name);
+        expect(
+          node.shadowCastingMode,
+          ShadowCastingMode.off,
+          reason: node.name,
+        );
       }
       final candidates = <Node>[];
       raycastNode(

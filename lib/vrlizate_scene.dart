@@ -9,7 +9,12 @@
 /// README for platform setup, profiling guidance, and rendering limitations.
 library;
 
+export 'src/avatar/vr_avatar_node.dart';
+export 'src/animation/vr_actor_animation.dart';
+export 'src/assets/vr_glb_template_cache.dart';
 export 'src/quality_preset.dart';
+export 'src/vr_device_performance.dart';
+export 'src/vr_fixed_foveation.dart';
 export 'src/stereo_head_rig.dart';
 export 'src/vr_spatial_tracking.dart';
 export 'src/vr_stick_look.dart';
@@ -24,6 +29,7 @@ export 'src/vr_world_navigation_scope.dart';
 export 'src/vr_input_session_scope.dart';
 export 'src/vr_controller_feedback.dart';
 export 'src/vr_zenith_recenter.dart';
+export 'src/streaming/vr_scene_region.dart';
 export 'src/openxr/vr_gpu_external_render_target.dart';
 export 'src/openxr/vr_openxr_swapchain_bridge.dart';
 export 'src/openxr/vr_openxr_native_bridge.dart';
@@ -69,6 +75,7 @@ export 'package:vrlizate_widgets/vrlizate_widgets.dart'
         VrWorldPose,
         VrWorldAction,
         VrWorldActionPanel3D,
+        VrWidgetSurface3D,
         VrWorldTextSpec,
         VrWorldTextNodeBuilder,
         controlMaterial,

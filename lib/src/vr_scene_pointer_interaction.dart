@@ -10,6 +10,10 @@ import 'vr_viewer_profile.dart';
 class VrSceneGazeLifecycle {
   bool _resetPending = false;
 
+  /// A removed system control cannot carry dwell into its replacement. Defer
+  /// callbacks until the input tick, outside widget configuration/build.
+  void invalidateTarget() => _resetPending = true;
+
   void configurationChanged({
     required bool previousGazeEnabled,
     required bool gazeEnabled,

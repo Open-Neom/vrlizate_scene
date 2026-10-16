@@ -152,6 +152,25 @@ class VrControllerFeedbackVisuals {
       .048,
       _material(const Color(0xFFF45364)),
     );
+    final pipWhite = _material(const Color(0xFFFFFFFF));
+    _moveStickPip = part(
+      'move_stick_pip',
+      vm.Vector3(.026, .026, .014),
+      .225,
+      -.012,
+      .082,
+      pipWhite,
+      round: true,
+    );
+    _lookStickPip = part(
+      'look_stick_pip',
+      vm.Vector3(.026, .026, .014),
+      -.225,
+      -.012,
+      .082,
+      pipWhite,
+      round: true,
+    );
     parent.add(root);
     _createSurface =
         artworkBuilder ?? const VrRetainedGpuResources().createSurface;
@@ -232,7 +251,13 @@ class VrControllerFeedbackVisuals {
   late final Future<void> ready;
   final List<_FeedbackKey> _keys = [];
   late final _FeedbackKey _grip;
-  late final Node _moveStick, _lookStick, _laserDot, _throttle, _brake;
+  late final Node _moveStick,
+      _lookStick,
+      _moveStickPip,
+      _lookStickPip,
+      _laserDot,
+      _throttle,
+      _brake;
   final vm.Vector3 _scratch = vm.Vector3.zero();
   final vm.Matrix4 _pose = vm.Matrix4.identity();
   Geometry? _box, _sphere;
@@ -257,7 +282,7 @@ class VrControllerFeedbackVisuals {
 
   static Node _nonInteractive(Node node) => node
     ..raycastable = false
-    ..castsShadows = false;
+    ..shadowCastingMode = ShadowCastingMode.off;
 
   static UnlitMaterial _material(Color color) => UnlitMaterial()
     ..vertexColorWeight = 0
@@ -295,6 +320,267 @@ class VrControllerFeedbackVisuals {
     Size size,
     Map<String, String> actions,
   ) {
+    final w = size.width;
+    final h = size.height;
+    double px(double x) => (.5 - x / .8) * w;
+    double py(double y) => (.5 - y / .35) * h;
+
+    // 1. Smartphone outer bezel rim and camera punch-hole.
+    final outerBezel = RRect.fromRectAndRadius(
+      Rect.fromLTWH(4, 4, w - 8, h - 8),
+      const Radius.circular(34),
+    );
+    canvas.drawRRect(
+      outerBezel,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5
+        ..color = const Color(0xCC3B526E),
+    );
+    final screenRim = RRect.fromRectAndRadius(
+      Rect.fromLTWH(16, 14, w - 32, h - 28),
+      const Radius.circular(26),
+    );
+    canvas.drawRRect(
+      screenRim,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = const Color(0x6600E5FF),
+    );
+    // Front camera punch-hole on the left bezel and speaker slit at the top.
+    canvas.drawCircle(
+      Offset(28, h * .5),
+      6.5,
+      Paint()..color = const Color(0xDD050811),
+    );
+    canvas.drawCircle(
+      Offset(28, h * .5),
+      6.5,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = const Color(0x88395AB5),
+    );
+
+    // 2. Concave ergonomic button bands matching VrJoystickGeometry on the phone.
+    final stickY = py(-.012);
+    final stickRadius = (0.092 / .8) * w;
+    void paintSideCluster({
+      required bool right,
+      required List<Color> topColors,
+      required List<Color> sideColors,
+      required List<Color> bottomColors,
+    }) {
+      final sideWidth = w * .335;
+      final x0 = right ? w - 20 - sideWidth : 20.0;
+      final outerX = right ? w - 20.0 : 20.0;
+      final innerX = right ? x0 : x0 + sideWidth;
+      final cx = px(right ? -.225 : .225);
+      final well = Path()
+        ..addOval(
+          Rect.fromCircle(
+            center: Offset(cx, stickY),
+            radius: stickRadius + 8,
+          ),
+        );
+      final topEnd = py(.062);
+      final bottomStart = py(-.074);
+      const gap = 6.0;
+      final shoulderEdge = cx + (right ? -gap / 2 : gap / 2);
+
+      final topBand = Path.combine(
+        PathOperation.difference,
+        Path()
+          ..moveTo(outerX, 18)
+          ..lineTo(innerX, 18)
+          ..lineTo(innerX, stickY)
+          ..lineTo(shoulderEdge, stickY)
+          ..lineTo(shoulderEdge, topEnd - gap / 2)
+          ..lineTo(outerX, topEnd - gap / 2)
+          ..close(),
+        well,
+      );
+      final sideBand = Path.combine(
+        PathOperation.difference,
+        Path()..addRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTRB(
+              right ? cx + gap / 2 : outerX,
+              topEnd + gap / 2,
+              right ? outerX : cx - gap / 2,
+              bottomStart - gap / 2,
+            ),
+            const Radius.circular(14),
+          ),
+        ),
+        well,
+      );
+      final bottomBand = Path.combine(
+        PathOperation.difference,
+        Path()..addRRect(
+          RRect.fromRectAndRadius(
+            Rect.fromLTRB(
+              x0,
+              bottomStart + gap / 2,
+              x0 + sideWidth,
+              h - 18,
+            ),
+            const Radius.circular(14),
+          ),
+        ),
+        well,
+      );
+
+      for (final (path, colors) in [
+        (topBand, topColors),
+        (sideBand, sideColors),
+        (bottomBand, bottomColors),
+      ]) {
+        final bounds = path.getBounds();
+        canvas.drawPath(
+          path,
+          Paint()
+            ..shader = LinearGradient(
+              colors: [
+                colors[0].withValues(alpha: .38),
+                colors[1].withValues(alpha: .28),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ).createShader(bounds),
+        );
+        canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.4
+            ..color = colors[0].withValues(alpha: .82),
+        );
+      }
+    }
+
+    paintSideCluster(
+      right: false,
+      topColors: const [Color(0xFF00A7B5), Color(0xFF395AB5)],
+      sideColors: const [Color(0xFFFFD54F), Color(0xFFF59E0B)],
+      bottomColors: const [Color(0xFF2979FF), Color(0xFF1555BA)],
+    );
+    paintSideCluster(
+      right: true,
+      topColors: const [Color(0xFFFF9100), Color(0xFFD64D18)],
+      sideColors: const [Color(0xFFFF5252), Color(0xFFB71C45)],
+      bottomColors: const [Color(0xFF10B981), Color(0xFF087848)],
+    );
+
+    // 3. VirtualThumbstick concentric neon rings and crosshairs around both wells.
+    for (final (stickX, color) in [
+      (.225, const Color(0xFF00E5FF)),
+      (-.225, const Color(0xFFFF9100)),
+    ]) {
+      final center = Offset(px(stickX), stickY);
+      canvas.drawCircle(
+        center,
+        stickRadius,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.2
+          ..color = color.withValues(alpha: .90),
+      );
+      canvas.drawCircle(
+        center,
+        stickRadius * .66,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = color.withValues(alpha: .42),
+      );
+      canvas.drawCircle(
+        center,
+        stickRadius * .24,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = color.withValues(alpha: .32),
+      );
+      final crossPaint = Paint()
+        ..strokeWidth = 1.4
+        ..color = color.withValues(alpha: .36);
+      canvas.drawLine(
+        Offset(center.dx - stickRadius * .86, center.dy),
+        Offset(center.dx + stickRadius * .86, center.dy),
+        crossPaint,
+      );
+      canvas.drawLine(
+        Offset(center.dx, center.dy - stickRadius * .86),
+        Offset(center.dx, center.dy + stickRadius * .86),
+        crossPaint,
+      );
+    }
+
+    // 4. Center panel frame, RECENTRAR / GRIP pill, and laser target reticle.
+    final centerPanel = RRect.fromRectAndRadius(
+      Rect.fromLTRB(px(.108), 20, px(-.108), h - 20),
+      const Radius.circular(18),
+    );
+    canvas.drawRRect(
+      centerPanel,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = const Color(0x8810B981),
+    );
+    final gripRect = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: Offset(px(0), py(.093)),
+        width: (0.175 / .8) * w,
+        height: (0.046 / .35) * h,
+      ),
+      const Radius.circular(12),
+    );
+    canvas.drawRRect(
+      gripRect,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [Color(0x66E17815), Color(0x66B43A77)],
+        ).createShader(gripRect.outerRect),
+    );
+    canvas.drawRRect(
+      gripRect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..color = const Color(0xCCFF9100),
+    );
+
+    // Radar reticle over laser_pad.
+    final radarCenter = Offset(px(0), py(-.015));
+    final radarRx = (0.048 / .8) * w;
+    for (final factor in [1.0, .58]) {
+      canvas.drawCircle(
+        radarCenter,
+        radarRx * factor,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..color = const Color(0x6610B981),
+      );
+    }
+    canvas.drawLine(
+      Offset(radarCenter.dx - radarRx * 1.15, radarCenter.dy),
+      Offset(radarCenter.dx + radarRx * 1.15, radarCenter.dy),
+      Paint()
+        ..strokeWidth = 1.2
+        ..color = const Color(0x5510B981),
+    );
+    canvas.drawLine(
+      Offset(radarCenter.dx, radarCenter.dy - radarRx * .85),
+      Offset(radarCenter.dx, radarCenter.dy + radarRx * .85),
+      Paint()
+        ..strokeWidth = 1.2
+        ..color = const Color(0x5510B981),
+    );
+
     void label(
       String text,
       double x,
@@ -316,8 +602,8 @@ class VrControllerFeedbackVisuals {
       painter.paint(
         canvas,
         Offset(
-          (.5 - x / .8) * size.width - painter.width / 2,
-          (.5 - y / .35) * size.height - painter.height / 2,
+          px(x) - painter.width / 2,
+          py(y) - painter.height / 2,
         ),
       );
       painter.dispose();
@@ -338,10 +624,10 @@ class VrControllerFeedbackVisuals {
       if (text != null)
         label(text, key.$2, key.$3 - .041, 13, color: captionColor);
     }
-    label('GRIP', 0, .093, 20);
+    label('GRIP · RECENTRAR', 0, .093, 15);
     final grip = caption('GRIP');
-    if (grip != null) label(grip, 0, .066, 13, color: captionColor);
-    label('MANDO', 0, .143, 18, color: const Color(0xFF72BBDB));
+    if (grip != null) label(grip, 0, .064, 13, color: captionColor);
+    label('MANDO 3DoF VRLIZATE', 0, .143, 15, color: const Color(0xFF00E5FF));
     label('FRENO', .055, -.131, 13);
     label('GAS', -.055, -.131, 13);
   }
@@ -375,28 +661,27 @@ class VrControllerFeedbackVisuals {
     _keys[4].pressed = state.btnX;
     _keys[5].pressed = state.btnA;
     _grip.pressed = state.grip;
-    _move(
-      _moveStick,
-      .225 - _axis(state.moveX) * .042,
-      -.012 + _axis(state.moveY) * .042,
-    );
-    _move(
-      _lookStick,
-      -.225 - _axis(state.lookX) * .042,
-      -.012 + _axis(state.lookY) * .042,
-    );
+    final moveX = .225 - _axis(state.moveX) * .042;
+    final moveY = -.012 + _axis(state.moveY) * .042;
+    _move(_moveStick, moveX, moveY);
+    _move(_moveStickPip, moveX, moveY, z: .082);
+    final lookX = -.225 - _axis(state.lookX) * .042;
+    final lookY = -.012 + _axis(state.lookY) * .042;
+    _move(_lookStick, lookX, lookY);
+    _move(_lookStickPip, lookX, lookY, z: .082);
     _move(
       _laserDot,
       -_axis(state.driving ? state.steering : state.laserX) * .052,
       -.015 + (state.driving ? 0 : _axis(state.laserY) * .032),
+      z: .055,
     );
     _throttle.visible = _brake.visible = state.driving;
     _bar(_throttle, _pedal(state.throttle), -1);
     _bar(_brake, _pedal(state.brake), 1);
   }
 
-  void _move(Node node, double x, double y) {
-    _scratch.setValues(x, y, node == _laserDot ? .055 : .065);
+  void _move(Node node, double x, double y, {double z = .065}) {
+    _scratch.setValues(x, y, z);
     node.position = _scratch;
   }
 

@@ -20,6 +20,8 @@ import 'package:vrlizate_widgets/vrlizate_widgets.dart'
     show VrButton3D, VrTextLabel;
 
 import 'quality_preset.dart';
+import 'vr_device_performance.dart';
+import 'vr_fixed_foveation.dart';
 import 'vr_frame_quality.dart';
 import 'vr_gpu_resource_gate.dart';
 import 'simulated_hand_visuals.dart';
@@ -31,6 +33,8 @@ import 'vr_input_session_scope.dart';
 import 'vr_controller_feedback.dart';
 import 'vr_controller_feedback_visuals.dart';
 import 'vr_scene_input_controller.dart';
+import 'vr_scene_home_control_lifecycle.dart';
+import 'vr_stereo_scene_layers.dart';
 import 'vr_scene_pointer_interaction.dart';
 import 'vr_viewer_profile.dart';
 import 'vr_zenith_recenter.dart';
@@ -68,7 +72,10 @@ class StereoSceneView extends StatefulWidget {
     this.onGazeHoverChanged,
     this.gazeFilter,
     this.showReticle = true,
+    this.showHomeControl = true,
+    this.showControllerFeedback = true,
     this.quality,
+    this.fixedFoveation,
     this.dynamicScaling = true,
     this.targetRefreshRateHz,
     this.onQualityChanged,
@@ -80,6 +87,7 @@ class StereoSceneView extends StatefulWidget {
     this.onInteractionRay,
     this.locomotionEnabled = true,
     this.lookInputEnabled = true,
+    this.edgeTurnEnabled = true,
     this.onUnhandledTempleTap,
   });
 
@@ -98,6 +106,10 @@ class StereoSceneView extends StatefulWidget {
 
   /// Whether the look stick rotates the view; head tracking is unaffected.
   final bool lookInputEnabled;
+
+  /// Face a sustained left-stick rim direction during smooth locomotion.
+  /// Disable for experiences that assign their own meaning to the left stick.
+  final bool edgeTurnEnabled;
 
   /// Optional input arbiter for unified multimodal priority & gaze suppression.
   ///
@@ -191,8 +203,23 @@ class StereoSceneView extends StatefulWidget {
   /// Whether to draw the center reticle with dwell progress.
   final bool showReticle;
 
+  /// Whether to add the renderer's floating, world-locked HOME button.
+  /// Disable when the experience supplies its own in-world HOME action.
+  /// Resource-loading/failure recovery still exposes the navigation back action.
+  final bool showHomeControl;
+
+  /// Whether to allocate and draw the controller's 3D status overlay.
+  /// Input drivers, controller events and pointer interaction remain active.
+  final bool showControllerFeedback;
+
   /// Quality preset; when null a conservative preset is selected.
   final VrQualityPreset? quality;
+
+  /// Opt-in spatial foveation experiment: sharp center, lower-resolution
+  /// periphery, both rendered in the SAME frame. Null keeps two uniform eyes.
+  /// Uses four views and can cost more on geometry/shadow-bound scenes.
+  /// See [VrFixedFoveation] for restrictions on screen-space effects.
+  final VrFixedFoveation? fixedFoveation;
 
   /// When true, sustained build/raster overruns reduce quality one tier.
   /// Monitoring pauses with the app lifecycle and when TickerMode is disabled.
@@ -294,11 +321,14 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   InertialTapDetector? _tapDetector;
   VrQualityPreset? _preset;
   VrWorldNavigationScope? _worldNavigation;
+  bool get _systemGazeEnabled =>
+      view.showHomeControl && _worldNavigation != null;
   VrButton3D? _worldHomeButton;
   vm.Vector3? _worldHomeCenter;
   List<Node> _worldHomeNodes = const [];
-  bool _worldHomeCreating = false;
-  int _worldHomeGeneration = 0;
+  late final _worldHomeLifecycle = VrSceneHomeControlLifecycle(
+    enabled: view.showHomeControl,
+  );
 
   static const String _worldHomeNodeName = '__vrlizate_system_home__';
   VrInputArbiter? _activeArbiter;
@@ -306,6 +336,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     rig: _rig,
     locomotionEnabled: view.locomotionEnabled,
     lookInputEnabled: view.lookInputEnabled,
+    edgeTurnEnabled: view.edgeTurnEnabled,
     pick: _pickInputNode,
     activate: (node) {
       _activateGazeNode(node);
@@ -415,17 +446,24 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     if (view.enableHandTracking) {
       _handRig = SimulatedHandVisuals(view.scene.root, view.handGlowColor);
     }
+    vrHandheldConsoleMode.addListener(_onDisplayModeChanged);
+  }
+
+  void _onDisplayModeChanged() {
+    if (!mounted) return;
+    _syncSpatialTracking();
+    setState(() {});
   }
 
   SimulatedHandVisuals? _handRig;
 
   void _onArbiterEvent(VrInputEvent event) {
-    if (!mounted) return;
+    if (!mounted || !_sceneActive) return;
     _input.handleEvent(event);
   }
 
   void _onSystemInputEvent(VrInputEvent event) {
-    if (!mounted) return;
+    if (!mounted || !_sceneActive) return;
     _input.handleSystemEvent(event);
     view.onInteractionRay?.call(_input.ray);
   }
@@ -443,7 +481,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
 
   void _updateFeedbackSource() {
-    final next = VrControllerFeedbackScope.maybeOf(context)?.state;
+    final next = view.showControllerFeedback
+        ? VrControllerFeedbackScope.maybeOf(context)?.state
+        : null;
     if (identical(next, _feedbackSource)) return;
     _feedbackSource?.removeListener(_onFeedbackChanged);
     _feedbackSource = next;
@@ -460,7 +500,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
 
   void _onFeedbackChanged() {
-    if (!mounted) return;
+    if (!mounted || !view.showControllerFeedback) return;
     final feedback = _feedbackSource?.value;
     if (feedback == null) return;
     // Do not allocate GPU assets for views that never use a remote controller.
@@ -528,6 +568,11 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   void didUpdateWidget(covariant _ReadyStereoSceneView oldWidget) {
     super.didUpdateWidget(oldWidget);
     final previous = oldWidget.configuration;
+    if (previous.showHomeControl != view.showHomeControl ||
+        !identical(previous.scene, view.scene)) {
+      _worldHomeLifecycle.setEnabled(view.showHomeControl);
+      _removeWorldHome();
+    }
     if (!identical(previous.scene, view.scene)) {
       _qualityPolicy.reset();
       _feedbackVisuals?.dispose();
@@ -536,12 +581,16 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       _feedbackCreationFailed = false;
       _onFeedbackChanged();
     }
+    if (previous.showControllerFeedback != view.showControllerFeedback) {
+      _updateFeedbackSource();
+    }
     _gazeLifecycle.configurationChanged(
       previousGazeEnabled: previous.gazeEnabled,
       gazeEnabled: view.gazeEnabled,
     );
     _input.locomotionEnabled = view.locomotionEnabled;
     _input.lookInputEnabled = view.lookInputEnabled;
+    _input.edgeTurnEnabled = view.edgeTurnEnabled;
     if (view.arbiter != previous.arbiter) {
       _updateActiveArbiter();
     }
@@ -571,11 +620,14 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
 
   void _recenter() {
+    _input.reset();
     _headTracker.recenter();
     // Owned trackers reach the rig through the proxy, exactly once. An
     // external tracker may have an unrelated target and retains legacy use.
     if (view.headTracker != null) _rig.recenter();
   }
+
+  bool _sceneActive = false;
 
   void _syncSpatialTracking() {
     final scope = VrSpatialTrackingScope.maybeOf(context);
@@ -583,20 +635,29 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         _appResumed &&
         TickerMode.valuesOf(context).enabled &&
         (ModalRoute.isCurrentOf(context) ?? true);
+    if (!sceneActive) _input.reset();
+    _sceneActive = sceneActive;
     if (view.headTracker == null) {
-      if (sceneActive && !_ownedHeadTrackerStarted && _headTracker.canStart) {
+      final shouldTrackHead = sceneActive && !vrHandheldConsoleMode.value;
+      if (shouldTrackHead &&
+          !_ownedHeadTrackerStarted &&
+          _headTracker.canStart) {
         _headTracker.start();
         _ownedHeadTrackerStarted = true;
-      } else if (!sceneActive && _ownedHeadTrackerStarted) {
+      } else if (!shouldTrackHead && _ownedHeadTrackerStarted) {
         _headTracker.stop();
         _ownedHeadTrackerStarted = false;
+      }
+      if (vrHandheldConsoleMode.value) {
+        _rig.setPitch(0.0);
       }
     }
     final active =
         scope != null &&
         scope.enabled &&
         view.headTracker == null &&
-        sceneActive;
+        sceneActive &&
+        !vrHandheldConsoleMode.value;
     final previous = _spatialScope;
     if (active &&
         _spatial != null &&
@@ -631,6 +692,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   @override
   void dispose() {
+    vrHandheldConsoleMode.removeListener(_onDisplayModeChanged);
     WidgetsBinding.instance.removeObserver(this);
     _rotationTarget.spatial = null;
     final spatial = _spatial;
@@ -658,8 +720,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
 
   void _tick(Duration elapsed, double dt) {
+    if (!_sceneActive) return;
     _spatial?.tick();
-    final systemGazeEnabled = _worldNavigation != null;
+    final systemGazeEnabled = _systemGazeEnabled;
     _gazeLifecycle.beforeTick(
       _gaze,
       gazeEnabled: view.gazeEnabled,
@@ -671,9 +734,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
     final t = elapsed.inMicroseconds / 1000000.0;
     if (t > 0.20 &&
-        _worldNavigation != null &&
+        systemGazeEnabled &&
         _worldHomeButton == null &&
-        !_worldHomeCreating) {
+        !_worldHomeLifecycle.creating) {
       _createWorldHome();
     }
     _worldHomeButton?.update(dt);
@@ -746,7 +809,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   Node? _pickInputNode(vm.Ray ray) {
     final homeCenter = _worldHomeCenter;
     var aimingAtHome = false;
-    if (_worldNavigation != null && homeCenter != null) {
+    if (view.showHomeControl &&
+        _worldNavigation != null &&
+        homeCenter != null) {
       final toHome = homeCenter - ray.origin;
       if (toHome.length2 > 0.0001) {
         toHome.normalize();
@@ -786,7 +851,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   void _activateGazeNode(Node node) {
     if (node.name == _worldHomeNodeName) {
-      _worldHomeButton?.onSelect(_worldHomeNodeName);
+      if (view.showHomeControl) {
+        _worldHomeButton?.onSelect(_worldHomeNodeName);
+      }
       return;
     }
     if (view.gazeEnabled) view.onGazeSelect?.call(node);
@@ -794,9 +861,10 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   Future<void> _createWorldHome() async {
     final navigation = _worldNavigation;
-    if (navigation == null || _worldHomeCreating || !mounted) return;
-    _worldHomeCreating = true;
-    final generation = ++_worldHomeGeneration;
+    if (!view.showHomeControl || navigation == null || !mounted) return;
+    final generation = _worldHomeLifecycle.begin();
+    if (generation == null) return;
+    final scene = view.scene;
     try {
       final button = VrButton3D(
         name: _worldHomeNodeName,
@@ -818,7 +886,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         name: _worldHomeNodeName,
       );
       if (!mounted ||
-          generation != _worldHomeGeneration ||
+          !view.showHomeControl ||
+          !_worldHomeLifecycle.accepts(generation) ||
+          !identical(scene, view.scene) ||
           _worldNavigation == null) {
         return;
       }
@@ -842,24 +912,27 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       _worldHomeCenter = center.clone();
       _worldHomeNodes = [...button.nodes, label.node];
       for (final node in _worldHomeNodes) {
-        view.scene.add(node);
+        scene.add(node);
       }
     } catch (error, stackTrace) {
       debugPrint('Could not create world HOME control: $error\n$stackTrace');
     } finally {
-      _worldHomeCreating = false;
+      _worldHomeLifecycle.finish(generation);
     }
   }
 
   void _removeWorldHome() {
-    _worldHomeGeneration++;
+    _worldHomeLifecycle.invalidate();
+    if (_gaze.gazeTargetId == _worldHomeNodeName) {
+      _gazeLifecycle.invalidateTarget();
+    }
     for (final node in _worldHomeNodes) {
-      if (node.parent != null) view.scene.remove(node);
+      // The configuration may already point at a replacement scene.
+      node.parent?.remove(node);
     }
     _worldHomeNodes = const [];
     _worldHomeButton = null;
     _worldHomeCenter = null;
-    _worldHomeCreating = false;
     _nodesByName.remove(_worldHomeNodeName);
   }
 
@@ -888,19 +961,50 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   @override
   Widget build(BuildContext context) {
-    final preset = _preset ?? VrQualityPreset.resolve(context, view.quality);
+    // The device catalog seeds a new scene only. Rebuilds retain any quality
+    // reduction already selected by the frame monitor or an explicit override.
+    final preset =
+        _preset ??
+        VrDevicePerformanceScope.initialPresetOf(
+          context,
+          explicitQuality: view.quality,
+        );
     if (_preset == null) _applyPreset(preset);
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
-    Widget child = SceneView(
-      view.scene,
-      viewsBuilder: (_) => _rig.buildStereoViews(),
-      pixelRatio: dpr * preset.pixelRatioScale,
-      onTick: _tick,
+    final isHandheldMono = vrHandheldConsoleMode.value;
+
+    // Keep one stable SceneView and ticker even when the experiment is toggled.
+    final scene = LayoutBuilder(
+      builder: (context, constraints) => SceneView(
+        view.scene,
+        viewsBuilder: (_) {
+          if (isHandheldMono) {
+            return _rig.buildMonoViews();
+          }
+          final eyes = _rig.buildStereoViews();
+          final foveation = view.fixedFoveation;
+          if (foveation == null || constraints.biggest.isEmpty) return eyes;
+          return foveation.buildViews(
+            eyes,
+            viewportSize: constraints.biggest,
+            inheritedRenderScale: view.scene.renderScale,
+            centers: [
+              Offset(0.5 + _rig.stereoImageInset / 2, 0.5),
+              Offset(0.5 - _rig.stereoImageInset / 2, 0.5),
+            ],
+          );
+        },
+        pixelRatio: dpr * preset.pixelRatioScale,
+        onTick: _tick,
+      ),
     );
 
-    if (view.touchFallback || view.doubleTapToRecenter) {
-      child = GestureDetector(
+    final effectiveGaze = view.gazeEnabled || _systemGazeEnabled;
+    return VrStereoSceneLayers(
+      // Keep this wrapper even when both gestures are disabled. The viewport
+      // and its captured native children must survive presentation changes.
+      scene: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanUpdate: view.touchFallback
             ? (d) => _headTracker.applyTouchDelta(d.delta.dx, d.delta.dy)
@@ -913,60 +1017,47 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
                 }
               }
             : null,
-        child: child,
-      );
-    }
-
-    child = Stack(
-      fit: StackFit.expand,
-      children: [
-        child,
-        IgnorePointer(
-          child: CustomPaint(
-            willChange: true,
-            painter: VrControllerFeedbackPainter(
-              repaint: _feedbackRepaint,
-              rig: _rig,
-              render: () => _feedbackScene?.renderViews,
-              visible: () => _feedbackVisuals?.root.visible ?? false,
-              // This small unlit model does not need the main scene's full
-              // high-DPI resolve buffers or MSAA on memory-limited phones.
-              pixelRatio: min(dpr * preset.pixelRatioScale, 1.5),
-            ),
-          ),
-        ),
-      ],
-    );
-
-    final effectiveGaze = view.gazeEnabled || _worldNavigation != null;
-    if ((view.showReticle && effectiveGaze) ||
-        view.showAlignmentDivider ||
-        view.zenithRecenter) {
-      child = Stack(
-        fit: StackFit.expand,
-        children: [
-          child,
-          RepaintBoundary(
-            child: IgnorePointer(
+        child: scene,
+      ),
+      controllerFeedback: view.showControllerFeedback && !isHandheldMono
+          ? IgnorePointer(
               child: CustomPaint(
-                painter: _ReticlePainter(
-                  progress: _dwellProgress,
-                  zenithProgress: _zenithProgress,
-                  showDivider: view.showAlignmentDivider,
-                  showReticle: view.showReticle && effectiveGaze,
-                  stereoImageInset: _rig.stereoImageInset,
-                  pointerRepaint: _pointerRepaint,
-                  pointerPosition: _readPointerPosition,
+                willChange: true,
+                painter: VrControllerFeedbackPainter(
+                  repaint: _feedbackRepaint,
                   rig: _rig,
+                  render: () => _feedbackScene?.renderViews,
+                  visible: () => _feedbackVisuals?.root.visible ?? false,
+                  // This small unlit model does not need the main scene's full
+                  // high-DPI resolve buffers or MSAA on memory-limited phones.
+                  pixelRatio: min(dpr * preset.pixelRatioScale, 1.5),
                 ),
               ),
-            ),
-          ),
-        ],
-      );
-    }
-
-    return child;
+            )
+          : null,
+      reticle:
+          (view.showReticle && effectiveGaze) ||
+              (view.showAlignmentDivider && !isHandheldMono) ||
+              view.zenithRecenter
+          ? RepaintBoundary(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: _ReticlePainter(
+                    progress: _dwellProgress,
+                    zenithProgress: _zenithProgress,
+                    showDivider: view.showAlignmentDivider && !isHandheldMono,
+                    showReticle: view.showReticle && effectiveGaze,
+                    mono: isHandheldMono,
+                    stereoImageInset: _rig.stereoImageInset,
+                    pointerRepaint: _pointerRepaint,
+                    pointerPosition: _readPointerPosition,
+                    rig: _rig,
+                  ),
+                ),
+              ),
+            )
+          : null,
+    );
   }
 }
 
@@ -1025,6 +1116,7 @@ class _ReticlePainter extends CustomPainter {
     required this.zenithProgress,
     this.showDivider = true,
     this.showReticle = true,
+    this.mono = false,
     required this.stereoImageInset,
     required Listenable pointerRepaint,
     required this.pointerPosition,
@@ -1037,6 +1129,7 @@ class _ReticlePainter extends CustomPainter {
   final ValueNotifier<double> zenithProgress;
   final bool showDivider;
   final bool showReticle;
+  final bool mono;
   final double stereoImageInset;
   final vm.Vector3? Function() pointerPosition;
   final StereoHeadRig rig;
@@ -1090,7 +1183,7 @@ class _ReticlePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     // 1. Central Physical Alignment Divider
-    if (showDivider) {
+    if (showDivider && !mono) {
       final dividerX = size.width * 0.5;
       final dividerPaint = Paint()
         ..color = Colors.black
@@ -1113,33 +1206,9 @@ class _ReticlePainter extends CustomPainter {
       );
     }
 
-    // 2. Stereoscopic Gaze Reticles
+    // 2. Stereoscopic or Mono Gaze Reticles
     if (showReticle) {
-      final insetPixels = size.width * 0.25 * stereoImageInset;
-      var leftCenter = Offset(
-        size.width * 0.25 + insetPixels,
-        size.height * 0.5,
-      );
-      var rightCenter = Offset(
-        size.width * 0.75 - insetPixels,
-        size.height * 0.5,
-      );
       final pointer = pointerPosition();
-      if (pointer != null) {
-        final eyeSize = Size(size.width / 2, size.height);
-        final left = rig
-            .eyeCamera(StereoEye.left)
-            .worldToScreen(pointer, eyeSize);
-        final right = rig
-            .eyeCamera(StereoEye.right)
-            .worldToScreen(pointer, eyeSize);
-        if (left == null || right == null) return;
-        leftCenter = left;
-        rightCenter = right + Offset(size.width / 2, 0);
-      }
-      // Gaze keeps a neutral white ring; the phone's laser paints its cursor
-      // in the laser color, like the reticle a Quest controller leaves on the
-      // surface it points at.
       final pointing = pointer != null;
       final ring = Paint()
         ..color = (pointing ? Colors.cyanAccent : Colors.white).withValues(
@@ -1156,26 +1225,61 @@ class _ReticlePainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3
         ..strokeCap = StrokeCap.round;
-
       final p = progress.value;
-      _drawReticle(canvas, leftCenter, p, ring, dot, arc);
-      _drawReticle(canvas, rightCenter, p, ring, dot, arc);
+
+      if (mono) {
+        var center = Offset(size.width * 0.5, size.height * 0.5);
+        if (pointer != null) {
+          final projected = rig.centerCamera().worldToScreen(pointer, size);
+          if (projected == null) return;
+          center = projected;
+        }
+        _drawReticle(canvas, center, p, ring, dot, arc);
+      } else {
+        final insetPixels = size.width * 0.25 * stereoImageInset;
+        var leftCenter = Offset(
+          size.width * 0.25 + insetPixels,
+          size.height * 0.5,
+        );
+        var rightCenter = Offset(
+          size.width * 0.75 - insetPixels,
+          size.height * 0.5,
+        );
+        if (pointer != null) {
+          final eyeSize = Size(size.width / 2, size.height);
+          final left = rig
+              .eyeCamera(StereoEye.left)
+              .worldToScreen(pointer, eyeSize);
+          final right = rig
+              .eyeCamera(StereoEye.right)
+              .worldToScreen(pointer, eyeSize);
+          if (left == null || right == null) return;
+          leftCenter = left;
+          rightCenter = right + Offset(size.width / 2, 0);
+        }
+        _drawReticle(canvas, leftCenter, p, ring, dot, arc);
+        _drawReticle(canvas, rightCenter, p, ring, dot, arc);
+      }
     }
 
     // 3. Hands-Free Zenith Recenter Target (when looking straight up)
     final zp = zenithProgress.value;
     if (zp > 0) {
-      final insetPixels = size.width * 0.25 * stereoImageInset;
-      final leftZenith = Offset(
-        size.width * 0.25 + insetPixels,
-        size.height * 0.18,
-      );
-      final rightZenith = Offset(
-        size.width * 0.75 - insetPixels,
-        size.height * 0.18,
-      );
-      _drawZenithTarget(canvas, leftZenith, zp);
-      _drawZenithTarget(canvas, rightZenith, zp);
+      if (mono) {
+        _drawZenithTarget(canvas, Offset(size.width * 0.5, size.height * 0.18), zp);
+      } else {
+        final insetPixels = size.width * 0.25 * stereoImageInset;
+        final leftZenith = Offset(
+          size.width * 0.25 + insetPixels,
+          size.height * 0.18,
+        );
+        final rightZenith = Offset(
+          size.width * 0.75 - insetPixels,
+          size.height * 0.18,
+        );
+        _drawZenithTarget(canvas, leftZenith, zp);
+        _drawZenithTarget(canvas, rightZenith, zp);
+      }
     }
   }
 
@@ -1185,6 +1289,7 @@ class _ReticlePainter extends CustomPainter {
       zenithProgress != oldDelegate.zenithProgress ||
       showDivider != oldDelegate.showDivider ||
       showReticle != oldDelegate.showReticle ||
+      mono != oldDelegate.mono ||
       stereoImageInset != oldDelegate.stereoImageInset ||
       pointerPosition != oldDelegate.pointerPosition ||
       rig != oldDelegate.rig;

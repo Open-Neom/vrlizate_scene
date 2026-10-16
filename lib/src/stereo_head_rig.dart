@@ -1,9 +1,15 @@
 import 'dart:math';
 import 'dart:ui' show Rect;
 
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart' show CameraRig, RotationTarget;
+
+/// Global reactive display mode for VRlizate:
+/// - `false` (default): Stereoscopic dual-eye VR headset view (Left | Right).
+/// - `true`: Single centered handheld console screen with compact side controls.
+final ValueNotifier<bool> vrHandheldConsoleMode = ValueNotifier<bool>(false);
 
 /// Which eye a stereo view renders.
 enum StereoEye { left, right }
@@ -347,6 +353,23 @@ class StereoHeadRig implements RotationTarget {
     );
   }
 
+  /// Builds the centered cyclopean [PerspectiveCamera] for single-screen
+  /// handheld console mode (no stereo baseline or horizontal inset).
+  PerspectiveCamera centerCamera({double? fovRadiansY}) => PerspectiveCamera(
+    position: eyeCenter,
+    target: eyeCenter + forward,
+    up: up,
+    fovRadiansY: fovRadiansY ?? cameraRig.fovY,
+  );
+
+  /// Single full-screen [RenderView] for handheld console mode (1 screen).
+  List<RenderView> buildMonoViews({double? fovRadiansY}) => [
+    RenderView(
+      camera: centerCamera(fovRadiansY: fovRadiansY),
+      viewport: const Rect.fromLTWH(0, 0, 1, 1),
+    ),
+  ];
+
   /// The pair of half-screen [RenderView]s (left | right) for
   /// `SceneView.viewsBuilder`.
   List<RenderView> buildStereoViews({double? fovRadiansY}) {
@@ -423,13 +446,13 @@ final class _ShiftedPerspectiveProjection extends PerspectiveProjection {
   final double eyeOffsetOverConvergence;
 
   @override
-  vm.Matrix4 getProjectionMatrix(double aspectRatio) {
-    final matrix = super.getProjectionMatrix(aspectRatio);
+  vm.Matrix4 getProjectionMatrix(double aspectRatio, {vm.Vector2? jitter}) {
+    final matrix = super.getProjectionMatrix(aspectRatio, jitter: jitter);
     // flutter_scene uses a left-handed view: clip.w = view.z and
     // clip.x = P00 * view.x + P02 * view.z. At the convergence point,
     // view.x = -eyeOffset, so adding P00 * eyeOffset / distance cancels
     // baseline disparity. The independent inset remains in normalized space.
-    matrix.storage[8] =
+    matrix.storage[8] +=
         horizontalShift + matrix.storage[0] * eyeOffsetOverConvergence;
     return matrix;
   }

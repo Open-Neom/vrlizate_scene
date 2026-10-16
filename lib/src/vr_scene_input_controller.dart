@@ -6,7 +6,8 @@ import 'package:vrlizate/vrlizate.dart'
         VrInputEvent,
         VrInputSource,
         VrInputType,
-        VrSpatialInputState;
+        VrSpatialInputState,
+        VrStickEdgeTurn;
 
 import 'stereo_head_rig.dart';
 import 'vr_stick_look.dart';
@@ -22,6 +23,8 @@ class VrSceneInputController {
   final VrSpatialInputState state;
   bool locomotionEnabled;
   bool lookInputEnabled;
+  bool edgeTurnEnabled;
+  final VrStickEdgeTurn _edgeTurn = VrStickEdgeTurn();
   final vm.Ray _ray = vm.Ray();
   final vm.Vector3 _movement = vm.Vector3.zero();
   final List<bool> _triggerHeld = List.filled(
@@ -37,6 +40,7 @@ class VrSceneInputController {
     this.isSystemNode,
     this.locomotionEnabled = true,
     this.lookInputEnabled = true,
+    this.edgeTurnEnabled = true,
     VrSpatialInputState? state,
   }) : state = state ?? VrSpatialInputState();
 
@@ -114,7 +118,11 @@ class VrSceneInputController {
 
   void update(double dt) {
     state.update(dt);
-    if (!dt.isFinite || dt <= 0) return;
+    if (!dt.isFinite || dt < 0) {
+      reset();
+      return;
+    }
+    if (dt == 0) return;
     // Avoid a large teleport after a paused/resumed frame.
     final step = dt.clamp(0.0, 0.1);
     if (lookInputEnabled && (state.lookX != 0 || state.lookY != 0)) {
@@ -128,18 +136,34 @@ class VrSceneInputController {
             1.45,
           );
     }
-    if (!locomotionEnabled || (state.moveX == 0 && state.moveY == 0)) return;
+    final movement = _edgeTurn.update(
+      stickX: state.moveX,
+      stickY: state.moveY,
+      atEdge: state.moveAtEdge,
+      heading: rig.bodyYaw,
+      dt: step,
+      enabled: locomotionEnabled && edgeTurnEnabled && state.edgeTurnEnabled,
+      // Elevation remains independent of the left stick's target heading.
+      // A physical gamepad's right yaw still overrides the assisted turn.
+      manualLook: lookInputEnabled && state.lookX.abs() > .015,
+    );
+    if (!locomotionEnabled) return;
+    rig.bodyYaw += movement.yawDelta;
+    if (state.moveX == 0 && state.moveY == 0) return;
     state.writeMovement(
       _movement,
       forward: rig.forward,
       screenRight: rig.screenRight,
       dt: step,
+      movementX: movement.movementX,
+      movementY: movement.movementY,
     );
     rig.eyeCenter.add(_movement);
   }
 
   void reset() {
     state.reset();
+    _edgeTurn.reset();
     _triggerHeld.fillRange(0, _triggerHeld.length, false);
   }
 }
