@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `VrAvatarNode.setPose` support (`VrAvatarPose` & `VrShoulderKinematics`),
+  `VrLimbKinematics` / `VrFirstPersonFeetRig` for two-point capsule limbs and
+  first-person VR gait, and `VrExplodedSceneRig` / `VrGrowthSchedule` for
+  interactive exploded views, vertical scan reveals, and staggered world pop-in.
+
 - Integrate left-stick rim turning into walking scenes using virtual body yaw,
   preserving tracked head motion and the requested travel direction. Expose
   `edgeTurnEnabled`; seated/custom locomotion stays independent. Clear input

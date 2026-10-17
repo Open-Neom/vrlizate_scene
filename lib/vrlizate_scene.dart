@@ -11,6 +11,8 @@ library;
 
 export 'src/avatar/vr_avatar_node.dart';
 export 'src/animation/vr_actor_animation.dart';
+export 'src/animation/vr_exploded_scene_rig.dart';
+export 'src/animation/vr_limb_kinematics.dart';
 export 'src/assets/vr_glb_template_cache.dart';
 export 'src/quality_preset.dart';
 export 'src/vr_device_performance.dart';

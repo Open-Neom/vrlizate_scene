@@ -7,6 +7,8 @@ import 'package:vrlizate_avatar/vrlizate_avatar.dart';
 import 'vr_avatar_geometry.dart';
 import 'vr_avatar_plan.dart';
 
+export 'package:vrlizate_avatar/vrlizate_avatar.dart'
+    show VrAvatarPose, VrShoulderKinematics;
 export 'vr_avatar_geometry.dart' show VrAvatarDetail;
 export 'vr_avatar_plan.dart' show VrAvatarMotion, VrAvatarPlan, VrAvatarSurface;
 
@@ -51,12 +53,14 @@ class VrAvatarNode {
   final vm.Matrix4 _delta = vm.Matrix4.identity();
   VrAvatarAppearance _appearance;
   VrAvatarDetail _detail;
+  VrAvatarPose? _pose;
   late VrAvatarPlan _plan;
   double _time = 0;
   bool _disposed = false;
 
   VrAvatarAppearance get appearance => _appearance;
   VrAvatarDetail get detail => _detail;
+  VrAvatarPose? get pose => _pose;
   VrAvatarPlan get plan => _plan;
   bool get isDisposed => _disposed;
   int get instanceCount => _plan.partsFor(_detail).length;
@@ -65,6 +69,16 @@ class VrAvatarNode {
   /// Render submission groups. Stereo/shadows may submit each group more than
   /// once; this is not a measured hardware draw-call count.
   int get batchCount => _batches.length;
+
+  /// Applies an explicit procedural [pose] (sit, walk, wave, head look, blink)
+  /// layered with or replacing idle motion.
+  void setPose(VrAvatarPose? pose) {
+    if (_disposed) return;
+    _pose = pose;
+    if (root.visible && _detail != VrAvatarDetail.far) {
+      _applyMotion(_time);
+    }
+  }
 
   void updateAppearance(VrAvatarAppearance appearance) {
     if (_disposed || appearance == _appearance) return;
@@ -107,11 +121,11 @@ class VrAvatarNode {
   }
 
   /// Evaluates localized idle motion (breathing, head look, ear/gill/leaf/tail
-  /// oscillation, orb hover) on retained instances while keeping feet and
-  /// ground contact shadows planted on the floor.
+  /// oscillation, orb hover) and optional [pose] on retained instances while
+  /// keeping feet and ground contact shadows planted on the floor.
   void tick(double dt) {
     if (_disposed ||
-        !animateIdle ||
+        (!animateIdle && _pose == null) ||
         !root.visible ||
         _detail == VrAvatarDetail.far ||
         !dt.isFinite ||
@@ -119,96 +133,179 @@ class VrAvatarNode {
       return;
     }
     _time = (_time + dt) % (math.pi * 20);
-    final t = _time;
-    final breathY = math.sin(t * 2.1) * .006 * _appearance.heightMeters;
-    final bodyPitch = math.sin(t * 2.1) * .018;
-    final bodyYaw = math.sin(t * 1.05) * .022;
-    final headYaw = math.sin(t * 1.35) * .048;
-    final headPitch = math.sin(t * 2.1 + .6) * .028;
-    final headRoll = math.cos(t * 1.35) * .022;
-    final armSwing = math.sin(t * 2.1) * .038;
-    final leftFeat = math.sin(t * 3.2) * .065;
-    final rightFeat = math.sin(t * 3.2 + .9) * .065;
-    final crownSway = math.sin(t * 2.6) * .055;
-    final tailWag = math.sin(t * 2.8) * .085;
-    final hoverY = math.sin(t * 2.4) * .016 * _appearance.heightMeters;
-    final hoverRoll = math.cos(t * 1.6) * .032;
+    _applyMotion(_time);
+  }
 
+  /// Computes the animated instance transform for [part] at [time] (in seconds)
+  /// combining optional idle breathing/sway and explicit procedural [pose].
+  ///
+  /// Pure CPU matrix evaluation; can be tested without an active GPU context.
+  static void evaluatePartTransform({
+    required VrAvatarPart part,
+    required vm.Matrix4 outTransform,
+    required double time,
+    required double heightMeters,
+    bool animateIdle = true,
+    VrAvatarPose? pose,
+    vm.Matrix4? scratchDelta,
+  }) {
+    if (part.motion == VrAvatarMotion.ground) {
+      outTransform.setFrom(part.transform);
+      return;
+    }
+    final delta = scratchDelta ?? vm.Matrix4.identity();
+    delta.setIdentity();
+
+    final idleScale = animateIdle ? 1.0 : 0.0;
+    final sitOffset = (pose?.sit ?? 0.0).clamp(0.0, 1.0) * 0.14 * heightMeters;
+    final breathY =
+        (math.sin(time * 2.1) * .006 * heightMeters * idleScale) +
+        (pose?.bob ?? 0.0) -
+        sitOffset;
+    final bodyPitch =
+        (math.sin(time * 2.1) * .018 * idleScale) + (pose?.lean ?? 0.0);
+    final bodyYaw =
+        (math.sin(time * 1.05) * .022 * idleScale) + (pose?.turn ?? 0.0);
+    final headYaw =
+        (math.sin(time * 1.35) * .048 * idleScale) + (pose?.look ?? 0.0);
+    final headPitch =
+        (math.sin(time * 2.1 + .6) * .028 * idleScale) + (pose?.nod ?? 0.0);
+    final headRoll =
+        (math.cos(time * 1.35) * .022 * idleScale) + (pose?.tilt ?? 0.0);
+    final armSwing = math.sin(time * 2.1) * .038 * idleScale;
+    final leftFlex = armSwing + (pose?.leftArmFlexion ?? 0.0);
+    final leftAbd = (armSwing * .5) + (pose?.leftArmAbduction ?? 0.0);
+    final rightFlex = -armSwing + (pose?.rightArmFlexion ?? 0.0);
+    final rightAbd = (armSwing * .5) + (pose?.rightArmAbduction ?? 0.0);
+    final leftClavicleY = VrShoulderKinematics.clavicleRiseMeters(
+      flexion: leftFlex,
+      abduction: leftAbd,
+      heightMeters: heightMeters,
+    );
+    final leftClavicleZ = VrShoulderKinematics.clavicleForwardMeters(
+      flexion: leftFlex,
+      abduction: leftAbd,
+      heightMeters: heightMeters,
+    );
+    final rightClavicleY = VrShoulderKinematics.clavicleRiseMeters(
+      flexion: rightFlex,
+      abduction: rightAbd,
+      heightMeters: heightMeters,
+    );
+    final rightClavicleZ = VrShoulderKinematics.clavicleForwardMeters(
+      flexion: rightFlex,
+      abduction: rightAbd,
+      heightMeters: heightMeters,
+    );
+    final eyeScaleY = pose?.eyeScaleY ?? 1.0;
+    final leftFeat = math.sin(time * 3.2) * .065 * idleScale;
+    final rightFeat = math.sin(time * 3.2 + .9) * .065 * idleScale;
+    final crownSway = math.sin(time * 2.6) * .055 * idleScale;
+    final tailWag = math.sin(time * 2.8) * .085 * idleScale;
+    final hoverY =
+        (math.sin(time * 2.4) * .016 * heightMeters * idleScale) +
+        (pose?.bob ?? 0.0);
+    final hoverRoll =
+        (math.cos(time * 1.6) * .032 * idleScale) + (pose?.tilt ?? 0.0);
+
+    final p = part.pivot;
+    switch (part.motion) {
+      case VrAvatarMotion.ground:
+        break;
+      case VrAvatarMotion.body:
+        delta
+          ..translateByDouble(p.x, p.y + breathY, p.z, 1)
+          ..rotateY(bodyYaw)
+          ..rotateX(bodyPitch)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.head:
+        delta
+          ..translateByDouble(p.x, p.y + breathY, p.z, 1)
+          ..rotateY(headYaw)
+          ..rotateX(headPitch)
+          ..rotateZ(headRoll)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+        if (eyeScaleY < 0.999 && part.id.startsWith('eye_')) {
+          delta
+            ..translateByDouble(p.x, p.y, p.z, 1)
+            ..scaleByDouble(1.0, eyeScaleY, 1.0, 1.0)
+            ..translateByDouble(-p.x, -p.y, -p.z, 1);
+        }
+      case VrAvatarMotion.leftArm:
+        delta
+          ..translateByDouble(
+            p.x,
+            p.y + breathY + leftClavicleY,
+            p.z + leftClavicleZ,
+            1,
+          )
+          ..rotateZ(-leftAbd)
+          ..rotateX(-leftFlex)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.rightArm:
+        delta
+          ..translateByDouble(
+            p.x,
+            p.y + breathY + rightClavicleY,
+            p.z + rightClavicleZ,
+            1,
+          )
+          ..rotateZ(rightAbd)
+          ..rotateX(-rightFlex)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.leftFeature:
+        delta
+          ..translateByDouble(p.x, p.y + breathY, p.z, 1)
+          ..rotateY(headYaw)
+          ..rotateZ(leftFeat)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.rightFeature:
+        delta
+          ..translateByDouble(p.x, p.y + breathY, p.z, 1)
+          ..rotateY(headYaw)
+          ..rotateZ(-rightFeat)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.crownFeature:
+        delta
+          ..translateByDouble(p.x, p.y + breathY, p.z, 1)
+          ..rotateY(headYaw)
+          ..rotateZ(crownSway)
+          ..rotateX(headPitch * .6)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.tail:
+        delta
+          ..translateByDouble(p.x, p.y + breathY * .6, p.z, 1)
+          ..rotateY(tailWag)
+          ..rotateZ(tailWag * .45)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.hoverCore:
+        delta
+          ..translateByDouble(p.x, p.y + hoverY, p.z, 1)
+          ..rotateY(bodyYaw * 1.2)
+          ..rotateZ(hoverRoll)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+    }
+    outTransform
+      ..setFrom(delta)
+      ..multiply(part.transform);
+  }
+
+  void _applyMotion(double t) {
+    final hMeters = _appearance.heightMeters;
     for (final batch in _batches.values) {
       final parts = batch.parts;
       if (parts.every((p) => p.motion == VrAvatarMotion.ground)) continue;
       batch.mesh.updateInstanceTransforms((transforms) {
         for (var i = 0; i < transforms.length; i++) {
-          final part = parts[i];
-          if (part.motion == VrAvatarMotion.ground) {
-            transforms[i].setFrom(part.transform);
-            continue;
-          }
-          final p = part.pivot;
-          _delta.setIdentity();
-          switch (part.motion) {
-            case VrAvatarMotion.ground:
-              break;
-            case VrAvatarMotion.body:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateY(bodyYaw)
-                ..rotateX(bodyPitch)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.head:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateY(headYaw)
-                ..rotateX(headPitch)
-                ..rotateZ(headRoll)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.leftArm:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateZ(-armSwing * .5)
-                ..rotateX(armSwing)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.rightArm:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateZ(armSwing * .5)
-                ..rotateX(-armSwing)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.leftFeature:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateY(headYaw)
-                ..rotateZ(leftFeat)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.rightFeature:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateY(headYaw)
-                ..rotateZ(-rightFeat)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.crownFeature:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY, p.z, 1)
-                ..rotateY(headYaw)
-                ..rotateZ(crownSway)
-                ..rotateX(headPitch * .6)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.tail:
-              _delta
-                ..translateByDouble(p.x, p.y + breathY * .6, p.z, 1)
-                ..rotateY(tailWag)
-                ..rotateZ(tailWag * .45)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-            case VrAvatarMotion.hoverCore:
-              _delta
-                ..translateByDouble(p.x, p.y + hoverY, p.z, 1)
-                ..rotateY(bodyYaw * 1.2)
-                ..rotateZ(hoverRoll)
-                ..translateByDouble(-p.x, -p.y, -p.z, 1);
-          }
-          transforms[i]
-            ..setFrom(_delta)
-            ..multiply(part.transform);
+          evaluatePartTransform(
+            part: parts[i],
+            outTransform: transforms[i],
+            time: t,
+            heightMeters: hMeters,
+            animateIdle: animateIdle,
+            pose: _pose,
+            scratchDelta: _delta,
+          );
         }
       }, recomputeWinding: false);
       batch.node.markTransformDirty();
