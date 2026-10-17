@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 - 2026-10-17
 
+- Promote `vrlizate_scene` to stable `1.0.0` aligned with the Open Neom modular architecture (`lib/utils/constants/`, `lib/utils/enums/`, `lib/domain/services/`).
+- Add `VrSceneConstants` centralizing stereo convergence, IPD, gaze dwell, lighting preset parameters, and transition constants.
+- Add `VrLightingPreset` (`daylight`, `neonArcade`, `warmGallery`, `deepSpace`, `sunset`) with deterministic ambient/directional colors and intensities.
+- Add `VrSceneTransitionStyle` (`instant`, `smoothFade`, `portalIris`, `zoomSlide`) and `VrSceneTransitionController` for smooth transition progress (`0.0..1.0`), fade opacity, iris aperture, and FOV warp when entering/exiting apps or portals.
 - Add `VrAvatarNode.setPose` support (`VrAvatarPose` & `VrShoulderKinematics`),
   `VrLimbKinematics` / `VrFirstPersonFeetRig` for two-point capsule limbs and
   first-person VR gait, and `VrExplodedSceneRig` / `VrGrowthSchedule` for

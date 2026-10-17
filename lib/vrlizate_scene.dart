@@ -9,12 +9,16 @@
 /// README for platform setup, profiling guidance, and rendering limitations.
 library;
 
+export 'domain/services/vr_scene_transition_controller.dart';
 export 'src/avatar/vr_avatar_node.dart';
 export 'src/animation/vr_actor_animation.dart';
 export 'src/animation/vr_exploded_scene_rig.dart';
 export 'src/animation/vr_limb_kinematics.dart';
 export 'src/assets/vr_glb_template_cache.dart';
 export 'src/quality_preset.dart';
+export 'utils/constants/vr_scene_constants.dart';
+export 'utils/enums/vr_lighting_preset.dart';
+export 'utils/enums/vr_scene_transition_style.dart';
 export 'src/vr_device_performance.dart';
 export 'src/vr_fixed_foveation.dart';
 export 'src/stereo_head_rig.dart';
