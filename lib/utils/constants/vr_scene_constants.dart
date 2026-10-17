@@ -3,7 +3,9 @@
 abstract final class VrSceneConstants {
   static const double defaultConvergenceDistanceMeters = 1.8;
   static const double defaultIpdMeters = 0.064;
-  static const double defaultGazeDwellSeconds = 1.2;
+  static const double defaultGazeDwellSeconds = 2.6;
+  static const double defaultGazeActivationDelaySeconds = 0.35;
+  static const double defaultButtonBDragHoldSeconds = 0.85;
 
   static const int defaultTransitionDurationMs = 450;
   static const double minTransitionProgress = 0.0;

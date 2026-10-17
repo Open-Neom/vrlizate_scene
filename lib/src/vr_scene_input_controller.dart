@@ -31,6 +31,7 @@ class VrSceneInputController {
     VrInputSource.values.length,
     false,
   );
+  bool _buttonBHeld = false;
 
   VrSceneInputController({
     required this.rig,
@@ -45,6 +46,10 @@ class VrSceneInputController {
   }) : state = state ?? VrSpatialInputState();
 
   bool get pointerActive => state.pointerActive;
+
+  /// Whether Button B (or secondary back/cancel hold) is currently held down,
+  /// enabling deliberate gaze+Button B dragging of 3D panels and widgets.
+  bool get buttonBHeld => _buttonBHeld;
 
   /// Borrowed ray, updated using the current viewer pose on every access.
   vm.Ray get ray {
@@ -61,6 +66,7 @@ class VrSceneInputController {
   /// Early listener: reserve system HOME/recenter before gameplay consumes an
   /// action. Normal controls remain for the late [handleEvent] listener.
   void handleSystemEvent(VrInputEvent event) {
+    _updateButtonBState(event);
     if (event.handled) return;
     state.handleEvent(event);
     if (event.type == VrInputType.recenter && event.active) {
@@ -89,7 +95,19 @@ class VrSceneInputController {
     return button == null || button == VrGamepadButton.r2 || button == 'r2';
   }
 
+  void _updateButtonBState(VrInputEvent event) {
+    final button = event.data?['button'];
+    final isB =
+        event.type == VrInputType.back ||
+        button == VrGamepadButton.b ||
+        button == 'b';
+    if (isB) {
+      _buttonBHeld = event.active;
+    }
+  }
+
   void handleEvent(VrInputEvent event) {
+    _updateButtonBState(event);
     var triggerDown = false;
     if (event.type == VrInputType.trigger) {
       // X/Y/L2 are secondary actions, not aliases for the primary trigger.
@@ -165,5 +183,6 @@ class VrSceneInputController {
     state.reset();
     _edgeTurn.reset();
     _triggerHeld.fillRange(0, _triggerHeld.length, false);
+    _buttonBHeld = false;
   }
 }

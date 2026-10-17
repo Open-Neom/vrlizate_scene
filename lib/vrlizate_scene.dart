@@ -84,5 +84,8 @@ export 'package:vrlizate_widgets/vrlizate_widgets.dart'
         VrWidgetSurface3D,
         VrWorldTextSpec,
         VrWorldTextNodeBuilder,
+        VrWordsphereConstants,
+        VrWordspherePlane,
+        VrWordsphereSessionController,
         controlMaterial,
         VrControlMeshBuilder;

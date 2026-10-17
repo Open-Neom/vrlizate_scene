@@ -38,6 +38,7 @@ import 'vr_stereo_scene_layers.dart';
 import 'vr_scene_pointer_interaction.dart';
 import 'vr_viewer_profile.dart';
 import 'vr_zenith_recenter.dart';
+import '../utils/constants/vr_scene_constants.dart';
 import 'openxr/vr_openxr_swapchain_bridge.dart';
 
 /// Stereoscopic VR view over a flutter_scene [Scene], driven by the
@@ -67,7 +68,7 @@ class StereoSceneView extends StatefulWidget {
     this.handGlowColor = const Color(0xFF00E5FF),
     this.gazeEnabled = true,
     this.enableHaptics = true,
-    this.gazeDwellSeconds = 2.0,
+    this.gazeDwellSeconds = VrSceneConstants.defaultGazeDwellSeconds,
     this.onGazeSelect,
     this.onGazeHoverChanged,
     this.gazeFilter,
