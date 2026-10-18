@@ -119,3 +119,95 @@ class VrDevicePerformanceScope extends InheritedWidget {
   bool updateShouldNotify(VrDevicePerformanceScope oldWidget) =>
       profile != oldWidget.profile;
 }
+
+/// A display mode reported by Android, never an application FPS measurement.
+@immutable
+class VrDisplayMode {
+  const VrDisplayMode({
+    required this.widthPixels,
+    required this.heightPixels,
+    required this.refreshRateHz,
+  });
+
+  final int widthPixels;
+  final int heightPixels;
+  final double refreshRateHz;
+
+  static VrDisplayMode? fromPlatform(Object? raw) {
+    if (raw is! Map) return null;
+    final width = _positiveInt(raw['widthPixels']);
+    final height = _positiveInt(raw['heightPixels']);
+    final hz = raw['refreshRateHz'];
+    if (width == null ||
+        height == null ||
+        hz is! num ||
+        !hz.isFinite ||
+        hz <= 0) {
+      return null;
+    }
+    return VrDisplayMode(
+      widthPixels: width,
+      heightPixels: height,
+      refreshRateHz: hz.toDouble(),
+    );
+  }
+
+  Map<String, Object> toJson() => {
+    'widthPixels': widthPixels,
+    'heightPixels': heightPixels,
+    'refreshRateHz': refreshRateHz,
+  };
+}
+
+/// Read-only startup snapshot, without serial number or inferred GPU capability.
+/// The OS can change its active refresh rate after this snapshot is taken.
+@immutable
+class VrDeviceCapabilities {
+  const VrDeviceCapabilities({
+    required this.manufacturer,
+    required this.model,
+    required this.androidSdk,
+    required this.activeMode,
+    required this.supportedModes,
+  });
+
+  final String manufacturer;
+  final String model;
+  final int? androidSdk;
+  final VrDisplayMode? activeMode;
+  final List<VrDisplayMode> supportedModes;
+
+  static VrDeviceCapabilities? fromPlatform(Object? raw) {
+    if (raw is! Map) return null;
+    final manufacturer = _deviceLabel(raw['manufacturer']);
+    final model = _deviceLabel(raw['model']);
+    if (manufacturer.isEmpty || model.isEmpty) return null;
+    final modes = raw['supportedModes'];
+    return VrDeviceCapabilities(
+      manufacturer: manufacturer,
+      model: model,
+      androidSdk: _positiveInt(raw['androidSdk']),
+      activeMode: VrDisplayMode.fromPlatform(raw['activeMode']),
+      supportedModes: List.unmodifiable(
+        modes is List
+            ? modes.map(VrDisplayMode.fromPlatform).whereType<VrDisplayMode>()
+            : const <VrDisplayMode>[],
+      ),
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'manufacturer': manufacturer,
+    'model': model,
+    'androidSdk': androidSdk,
+    'activeMode': activeMode?.toJson(),
+    'supportedModes': [for (final mode in supportedModes) mode.toJson()],
+  };
+}
+
+int? _positiveInt(Object? raw) => raw is int && raw > 0 ? raw : null;
+
+String _deviceLabel(Object? raw) {
+  if (raw is! String || raw.length > 160) return '';
+  return raw.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ').trim();
+}
