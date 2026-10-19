@@ -11,6 +11,7 @@ library;
 
 export 'domain/models/vr_detected_spatial_object.dart';
 export 'domain/models/vr_spatial_contour_segment.dart';
+export 'domain/models/vr_spatial_sonar_pulse.dart';
 export 'domain/services/vr_multi_camera_space_mapper.dart';
 export 'domain/services/vr_scene_transition_controller.dart';
 export 'src/avatar/vr_avatar_node.dart';

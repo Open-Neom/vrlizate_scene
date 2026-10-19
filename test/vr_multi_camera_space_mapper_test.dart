@@ -141,6 +141,19 @@ void main() {
       );
       expect(vBack.wireframeOpacity, 0.0);
       expect(vBack.cameraFeedOpacity, 0.0);
+
+      // Test 3D Sonar Pulse wavefront illumination
+      final sonar = VrSpatialSonarPulse(
+        origin: vm.Vector3.zero(),
+        durationSeconds: 1.2,
+        maxRadiusMeters: 5.0,
+      );
+      sonar.advance(0.6); // 50% progress -> radius = 2.5m, envelope = 1.0
+      expect(sonar.currentRadiusMeters, closeTo(2.5, 1e-4));
+      expect(sonar.intensityAtPoint(vm.Vector3(0.0, 0.0, -2.5)), closeTo(1.0, 1e-4));
+      expect(sonar.intensityAtPoint(vm.Vector3(0.0, 0.0, -4.5)), 0.0);
+      sonar.advance(0.7); // Past 1.2s -> inactive
+      expect(sonar.isActive, isFalse);
     });
   });
 }
