@@ -11,6 +11,7 @@ library;
 
 export 'domain/models/vr_acoustic_sonar_echo.dart';
 export 'domain/models/vr_detected_spatial_object.dart';
+export 'domain/models/vr_environmental_hardware_sample.dart';
 export 'domain/models/vr_rf_radio_beacon_sample.dart';
 export 'domain/models/vr_spatial_contour_segment.dart';
 export 'domain/models/vr_spatial_sonar_pulse.dart';

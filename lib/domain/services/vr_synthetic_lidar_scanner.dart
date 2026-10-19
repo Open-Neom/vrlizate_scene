@@ -7,6 +7,7 @@ import '../../utils/enums/vr_sensing_modality.dart';
 import '../../utils/enums/vr_spatial_object_category.dart';
 import '../models/vr_acoustic_sonar_echo.dart';
 import '../models/vr_detected_spatial_object.dart';
+import '../models/vr_environmental_hardware_sample.dart';
 import '../models/vr_rf_radio_beacon_sample.dart';
 import '../models/vr_spatial_contour_segment.dart';
 import '../models/vr_synthetic_lidar_point.dart';
@@ -248,6 +249,99 @@ class VrSyntheticLidarScanner {
       category: category,
       baseConfidence: confidence,
     );
+  }
+
+  /// Ingests additional smartphone hardware sensors (Dual-Pixel PDAF focus
+  /// distance, 3D Magnetometer ferromagnetic anomaly, Ambient Light window
+  /// detection, Differential Barometer, UWB ToF, and IMU heel-strike floor
+  /// contact) to enrich the 3D voxel room model.
+  List<VrSyntheticLidarPoint> ingestEnvironmentalHardwareSample({
+    required VrEnvironmentalHardwareSample sample,
+    required Vector3 sensorPosition,
+    required Vector3 sensorForward,
+  }) {
+    final added = <VrSyntheticLidarPoint>[];
+    final forward = sensorForward.length2 > 1e-6
+        ? sensorForward.normalized()
+        : Vector3(0.0, 0.0, -1.0);
+    final normal = -forward;
+
+    // 1. Camera Dual-Pixel PDAF Lens Focus Depth (d = 1 / diopters)
+    final pdafDepth = sample.pdafFocusDepthMeters;
+    if (pdafDepth != null) {
+      final hit = sensorPosition + forward * pdafDepth;
+      added.add(
+        _upsertVoxel(
+          worldPosition: hit,
+          normal: normal,
+          modality: VrSensingModality.cameraPdafFocusDepth,
+          category: pdafDepth < 1.2
+              ? VrSpatialObjectCategory.table
+              : VrSpatialObjectCategory.wall,
+          baseConfidence: 0.78,
+        ),
+      );
+    }
+
+    // 2. 3D Uncalibrated Magnetometer Ferromagnetic Anomaly (metal furniture / wall studs)
+    if (sample.hasFerromagneticObstacle) {
+      final probeDist = pdafDepth ?? 0.65;
+      final metalPos = sensorPosition + forward * probeDist;
+      added.add(
+        _upsertVoxel(
+          worldPosition: metalPos,
+          normal: normal,
+          modality: VrSensingModality.magneticAnomalyField,
+          category: VrSpatialObjectCategory.table,
+          baseConfidence: 0.82,
+        ),
+      );
+    }
+
+    // 3. Ambient RGB Light + CCT Window/Doorway Direction
+    if (sample.detectsDaylightWindowDirection) {
+      final windowPos = sensorPosition + forward * (pdafDepth ?? 2.40);
+      added.add(
+        _upsertVoxel(
+          worldPosition: windowPos,
+          normal: normal,
+          modality: VrSensingModality.ambientLightAndIrProximity,
+          category: VrSpatialObjectCategory.doorway,
+          baseConfidence: 0.74,
+        ),
+      );
+    }
+
+    // 4. Ultra-Wideband (UWB) ToF + AoA
+    final uwbDist = sample.uwbDistanceMeters;
+    if (uwbDist != null && uwbDist > 0.05) {
+      final uwbPos = sensorPosition + forward * uwbDist;
+      added.add(
+        _upsertVoxel(
+          worldPosition: uwbPos,
+          normal: normal,
+          modality: VrSensingModality.ultraWidebandToF,
+          category: VrSpatialObjectCategory.handController,
+          baseConfidence: 0.94,
+        ),
+      );
+    }
+
+    // 5. IMU Heel-Strike Footstep Vibrometry (clamps floor plane y = 0)
+    if (sample.heelStrikeShockG >= 1.35) {
+      final footFloorPos = Vector3(sensorPosition.x, 0.0, sensorPosition.z);
+      added.add(
+        _upsertVoxel(
+          worldPosition: footFloorPos,
+          normal: Vector3(0.0, 1.0, 0.0),
+          modality: VrSensingModality.imuFootstepVibrometry,
+          category: VrSpatialObjectCategory.floorBoundary,
+          baseConfidence: 0.88,
+        ),
+      );
+    }
+
+    return added;
   }
 
   /// Synchronizes all synthesized 3D objects and contour segments into

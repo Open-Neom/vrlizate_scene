@@ -91,5 +91,40 @@ void main() {
       scanner.syncToSpaceMapper(mapper);
       expect(mapper.objects, isNotEmpty);
     });
+
+    test('environmental hardware sensors (Barometer, Magnetometer, PDAF, ALS, UWB, IMU) enrich voxel cloud', () {
+      final scanner = VrSyntheticLidarScanner(voxelSizeMeters: 0.25);
+      final sample = VrEnvironmentalHardwareSample(
+        visorPressureHpa: 1013.20,
+        joystickPressureHpa: 1013.27, // +0.07 hPa -> ~0.59 m height delta
+        localMagneticMicroTesla: Vector3(48.0, -15.0, 32.0),
+        earthReferenceMagneticMicroTesla: Vector3(22.0, -12.0, 28.0),
+        lensFocusDistanceDiopters: 1.25, // 1 / 1.25 = 0.80 m
+        ambientLux: 620.0,
+        colorTemperatureKelvin: 5800.0,
+        uwbDistanceMeters: 0.58,
+        heelStrikeShockG: 1.65,
+      );
+
+      expect(sample.barometricHeightDeltaMeters, closeTo(0.59, 0.05));
+      expect(sample.hasFerromagneticObstacle, isTrue);
+      expect(sample.pdafFocusDepthMeters, closeTo(0.80, 0.01));
+      expect(sample.detectsDaylightWindowDirection, isTrue);
+
+      final points = scanner.ingestEnvironmentalHardwareSample(
+        sample: sample,
+        sensorPosition: Vector3(0.0, 1.5, 0.0),
+        sensorForward: Vector3(0.0, 0.0, -1.0),
+      );
+
+      expect(points.length, greaterThanOrEqualTo(4));
+      // The voxel at 0.80m is confirmed by both PDAF focus and Magnetometer anomaly!
+      final tablePoint = points.firstWhere(
+        (p) => p.contributingModalities.contains(
+          VrSensingModality.magneticAnomalyField,
+        ),
+      );
+      expect(tablePoint.isMultiModalConfirmed, isTrue);
+    });
   });
 }

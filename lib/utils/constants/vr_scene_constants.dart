@@ -81,6 +81,24 @@ abstract final class VrSceneConstants {
   static const String modalityAcousticSonarEchoId = 'acoustic_sonar_echo';
   static const String modalityWifiRfSensingId = 'wifi_rf_sensing';
   static const String modalityBluetoothBleRadarId = 'bluetooth_ble_radar';
+  static const String modalityDifferentialBarometerId =
+      'differential_barometer';
+  static const String modalityMagneticAnomalyFieldId =
+      'magnetic_anomaly_field';
+  static const String modalityCameraPdafFocusDepthId =
+      'camera_pdaf_focus_depth';
+  static const String modalityAmbientLightAndIrProximityId =
+      'ambient_light_ir_proximity';
+  static const String modalityUltraWidebandToFId = 'ultra_wideband_tof';
+  static const String modalityImuFootstepVibrometryId =
+      'imu_footstep_vibrometry';
+
+  static const double barometricMetersPerHpaAtRoomTemp = 8.43;
+  static const double ferromagneticAnomalyThresholdMicroTesla = 18.0;
+  static const double minPdafFocusDiopters = 0.15;
+  static const double maxPdafFocusDistanceMeters = 6.50;
+  static const double daylightWindowColorTempKelvin = 5200.0;
+  static const double windowLightMinLux = 350.0;
 
   static const double speedOfSoundMetersPerSec = 343.0;
   static const double defaultSmartphoneMicBaselineMeters = 0.145;
