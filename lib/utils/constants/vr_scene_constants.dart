@@ -123,5 +123,33 @@ abstract final class VrSceneConstants {
   static const String syntheticSonarWallPrefix = 'sonar_surface_';
   static const String syntheticRfAnchorPrefix = 'rf_anchor_';
   static const String syntheticRfWallShadowPrefix = 'rf_wall_shadow_';
+
+  // Reference Two-Devices VR Pair: Samsung Galaxy S25 Visor + Motorola Edge Joystick
+  static const String referenceVisorS25ModelName = 'Samsung Galaxy S25';
+  static const String referenceJoystickMotoEdgeModelName = 'Motorola Edge';
+  static const String genericVisorModelName = 'Generic Smartphone Visor';
+  static const String genericJoystickModelName = 'Generic Smartphone Joystick';
+
+  static const double s25VisorUltraWideFovDegrees = 120.0;
+  static const double motoEdgeRearUltraWideFovDegrees = 120.0;
+  static const double motoEdgeFrontSelfieFovDegrees = 84.0;
+  static const double genericRearCameraFovDegrees = 78.0;
+  static const double genericFrontCameraFovDegrees = 74.0;
+
+  static const double s25MicBaselineMeters = 0.147;
+  static const double motoEdgeMicBaselineMeters = 0.158;
+  static const double motoEdgeTouchSamplingHz = 240.0;
+  static const double genericTouchSamplingHz = 120.0;
+
+  // Spatial Capture Power Modes & Adaptive Multi-Rate Duty-Cycling
+  static const String powerModeUltraLowId = 'ultra_low_power';
+  static const String powerModeBalancedAdaptiveId = 'balanced_adaptive';
+  static const String powerModeHighPrecisionId = 'high_precision_scan';
+  static const String powerModeJoystickOffloadedId =
+      'joystick_offloaded_visor_priority';
+
+  static const double defaultTargetFrameBudgetMs = 11.1; // 90 FPS stereo budget
+  static const double visorThermalThrottleFrameMs = 15.2;
 }
+
 

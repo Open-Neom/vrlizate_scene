@@ -126,5 +126,37 @@ void main() {
       );
       expect(tablePoint.isMultiModalConfirmed, isTrue);
     });
+
+    test('Galaxy S25 Visor + Moto Edge Joystick profile offloads CPU to Joystick and protects 90-120 FPS Visor budget', () {
+      final profile = VrDeviceSensorPairProfile.s25VisorAndMotoEdgeJoystick();
+      expect(profile.visorModelName, 'Samsung Galaxy S25');
+      expect(profile.joystickModelName, 'Motorola Edge');
+      // 120 deg Ultra-Wide rear camera on Moto Edge at 1.05m covers > 3.5m floor circle
+      expect(profile.floorCoverageDiameterMeters(joystickHeightMeters: 1.05), greaterThan(3.5));
+
+      final scheduler = VrSpatialCaptureScheduler(profile: profile);
+      final budget = scheduler.evaluateResourceBudget(
+        userSpeedMetersPerSec: 0.30,
+        visorFrameTimeMs: 8.3,
+      );
+
+      expect(budget.isVisorFrameBudgetProtected, isTrue);
+      expect(budget.visorCpuLoadPercent, lessThan(2.5));
+      expect(budget.joystickCpuLoadPercent, greaterThan(budget.visorCpuLoadPercent));
+      expect(
+        scheduler.shouldSampleModality(
+          modality: VrSensingModality.acousticSonarEcho,
+          elapsedSeconds: 0.10,
+        ),
+        isTrue,
+      );
+      expect(
+        scheduler.shouldSampleModality(
+          modality: VrSensingModality.acousticSonarEcho,
+          elapsedSeconds: 0.12,
+        ),
+        isFalse,
+      );
+    });
   });
 }
