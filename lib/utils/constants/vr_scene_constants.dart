@@ -75,4 +75,35 @@ abstract final class VrSceneConstants {
   static const int contourColorPersonPetArgb = 0xFFFF006E;
   static const int contourColorObstacleAlertArgb = 0xFFFF3B30;
   static const int contourColorHandControllerArgb = 0xFF8338EC;
+
+  // Synthetic LiDAR (Acoustic Sonar + Wi-Fi RTT/RSSI + BLE Radar + Voxel Grid)
+  static const String modalityTriCameraVisionId = 'tri_camera_vision';
+  static const String modalityAcousticSonarEchoId = 'acoustic_sonar_echo';
+  static const String modalityWifiRfSensingId = 'wifi_rf_sensing';
+  static const String modalityBluetoothBleRadarId = 'bluetooth_ble_radar';
+
+  static const double speedOfSoundMetersPerSec = 343.0;
+  static const double defaultSmartphoneMicBaselineMeters = 0.145;
+  static const double defaultUltrasonicSonarCarrierHz = 20000.0;
+  static const double minSonarEchoDistanceMeters = 0.20;
+  static const double maxSonarEchoDistanceMeters = 8.00;
+  static const double sonarPatchHalfWidthMeters = 0.28;
+
+  static const double defaultRfTxPowerAtOneMeterDbm = -45.0;
+  static const double defaultIndoorPathLossExponent = 2.2;
+  static const double minRfDistanceMeters = 0.30;
+  static const double maxRfDistanceMeters = 15.0;
+  static const double rttFusionWeight = 0.80;
+  static const double rssiFusionWeight = 0.20;
+  static const double rfWallShadowingThresholdDb = 6.0;
+  static const double rfBeaconBoundingSizeMeters = 0.36;
+
+  static const double defaultLidarVoxelSizeMeters = 0.15;
+  static const double occupancyHitConfidenceDelta = 0.35;
+  static const double multiModalSynergyBonus = 0.20;
+  static const double minOccupiedVoxelConfidence = 0.50;
+  static const String syntheticSonarWallPrefix = 'sonar_surface_';
+  static const String syntheticRfAnchorPrefix = 'rf_anchor_';
+  static const String syntheticRfWallShadowPrefix = 'rf_wall_shadow_';
 }
+

@@ -9,11 +9,15 @@
 /// README for platform setup, profiling guidance, and rendering limitations.
 library;
 
+export 'domain/models/vr_acoustic_sonar_echo.dart';
 export 'domain/models/vr_detected_spatial_object.dart';
+export 'domain/models/vr_rf_radio_beacon_sample.dart';
 export 'domain/models/vr_spatial_contour_segment.dart';
 export 'domain/models/vr_spatial_sonar_pulse.dart';
+export 'domain/models/vr_synthetic_lidar_point.dart';
 export 'domain/services/vr_multi_camera_space_mapper.dart';
 export 'domain/services/vr_scene_transition_controller.dart';
+export 'domain/services/vr_synthetic_lidar_scanner.dart';
 export 'src/avatar/vr_avatar_node.dart';
 export 'src/animation/vr_actor_animation.dart';
 export 'src/animation/vr_exploded_scene_rig.dart';
@@ -26,6 +30,7 @@ export 'utils/constants/vr_scene_constants.dart';
 export 'utils/enums/vr_lighting_preset.dart';
 export 'utils/enums/vr_passthrough_mode.dart';
 export 'utils/enums/vr_scene_transition_style.dart';
+export 'utils/enums/vr_sensing_modality.dart';
 export 'utils/enums/vr_spatial_object_category.dart';
 export 'src/vr_device_performance.dart';
 export 'src/vr_frame_metrics.dart';
