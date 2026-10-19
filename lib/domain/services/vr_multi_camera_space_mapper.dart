@@ -16,10 +16,22 @@ class VrMultiCameraSpaceMapper {
   VrMultiCameraSpaceMapper({
     this.mode = VrPassthroughMode.multiCameraHybridSpace,
     this.safetyRadiusMeters = VrSceneConstants.defaultSafetyProximityRadiusMeters,
-  });
+    double controllerPassthroughMix = 0.0,
+  }) : _controllerPassthroughMix = controllerPassthroughMix.clamp(0.0, 1.0);
 
   VrPassthroughMode mode;
   double safetyRadiusMeters;
+  double _controllerPassthroughMix;
+
+  /// Manual passthrough mix percentage (`0.0 .. 1.0`) driven by the
+  /// dual-thumb center-to-lateral slide gesture on the Smartphone Joystick.
+  double get controllerPassthroughMix => _controllerPassthroughMix;
+
+  /// Updates the passthrough mix percentage (`0.0 .. 1.0`) received from the
+  /// Smartphone Joystick (`RemoteControllerState.passthroughMix`).
+  void applyControllerPassthroughMix(double mix) {
+    _controllerPassthroughMix = mix.clamp(0.0, 1.0);
+  }
 
   final Map<String, VrDetectedSpatialObject> _objectsById =
       <String, VrDetectedSpatialObject>{};
@@ -126,13 +138,28 @@ class VrMultiCameraSpaceMapper {
     required Vector3 viewerPosition,
     required double headPitchRadians,
   }) {
+    final mix = _controllerPassthroughMix.clamp(0.0, 1.0);
     switch (mode) {
       case VrPassthroughMode.off:
+        if (mix > 0.0) {
+          return (
+            wireframeOpacity: mix,
+            cameraFeedOpacity: mix,
+          );
+        }
         return (wireframeOpacity: 0.0, cameraFeedOpacity: 0.0);
       case VrPassthroughMode.visorCameraPassthrough:
-        return (wireframeOpacity: 0.35, cameraFeedOpacity: 0.85);
+        final scale = mix > 0.0 ? mix : 1.0;
+        return (
+          wireframeOpacity: (0.35 * scale).clamp(0.0, 1.0),
+          cameraFeedOpacity: (0.85 * scale).clamp(0.0, 1.0),
+        );
       case VrPassthroughMode.aiWireframeContours:
-        return (wireframeOpacity: 1.0, cameraFeedOpacity: 0.0);
+        final scale = mix > 0.0 ? mix : 1.0;
+        return (
+          wireframeOpacity: scale.clamp(0.0, 1.0),
+          cameraFeedOpacity: (mix * 0.65).clamp(0.0, 1.0),
+        );
       case VrPassthroughMode.multiCameraHybridSpace:
         final nearestDist = nearestObstacleDistanceMeters(viewerPosition);
         var proximityFactor = 0.0;
@@ -158,10 +185,11 @@ class VrMultiCameraSpaceMapper {
         }
 
         final wireframeAlpha = math
-            .max(0.20, math.max(proximityFactor, glanceDownFactor))
+            .max(mix, math.max(0.20, math.max(proximityFactor, glanceDownFactor)))
             .clamp(0.0, 1.0);
-        final cameraAlpha =
+        final autoCameraAlpha =
             (glanceDownFactor * 0.75 + proximityFactor * 0.35).clamp(0.0, 0.85);
+        final cameraAlpha = math.max(mix, autoCameraAlpha).clamp(0.0, 1.0);
         return (
           wireframeOpacity: wireframeAlpha,
           cameraFeedOpacity: cameraAlpha,

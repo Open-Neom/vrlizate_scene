@@ -101,5 +101,46 @@ void main() {
       expect(find.byType(VrSpatialPassthroughOverlay), findsOneWidget);
       expect(find.byType(CustomPaint), findsWidgets);
     });
+
+    test('applyControllerPassthroughMix blends virtual world and passthrough 0 -> 100% -> 0%', () {
+      final mapper = VrMultiCameraSpaceMapper(mode: VrPassthroughMode.off);
+      final viewerPos = vm.Vector3(0.0, 1.65, 0.0);
+
+      // 0% mix -> fully virtual world
+      mapper.applyControllerPassthroughMix(0.0);
+      final v0 = mapper.evaluateVisibility(
+        viewerPosition: viewerPos,
+        headPitchRadians: 0.0,
+      );
+      expect(v0.wireframeOpacity, 0.0);
+      expect(v0.cameraFeedOpacity, 0.0);
+
+      // 55% mix -> partial blend
+      mapper.applyControllerPassthroughMix(0.55);
+      final v55 = mapper.evaluateVisibility(
+        viewerPosition: viewerPos,
+        headPitchRadians: 0.0,
+      );
+      expect(v55.wireframeOpacity, closeTo(0.55, 1e-4));
+      expect(v55.cameraFeedOpacity, closeTo(0.55, 1e-4));
+
+      // 100% mix -> full passthrough
+      mapper.applyControllerPassthroughMix(1.0);
+      final v100 = mapper.evaluateVisibility(
+        viewerPosition: viewerPos,
+        headPitchRadians: 0.0,
+      );
+      expect(v100.wireframeOpacity, 1.0);
+      expect(v100.cameraFeedOpacity, 1.0);
+
+      // Back to 0% -> virtual world restored
+      mapper.applyControllerPassthroughMix(0.0);
+      final vBack = mapper.evaluateVisibility(
+        viewerPosition: viewerPos,
+        headPitchRadians: 0.0,
+      );
+      expect(vBack.wireframeOpacity, 0.0);
+      expect(vBack.cameraFeedOpacity, 0.0);
+    });
   });
 }
