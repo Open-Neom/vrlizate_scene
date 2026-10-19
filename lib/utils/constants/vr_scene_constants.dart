@@ -57,4 +57,22 @@ abstract final class VrSceneConstants {
   static const String transitionSmoothFadeId = 'smooth_fade';
   static const String transitionPortalIrisId = 'portal_iris';
   static const String transitionZoomSlideId = 'zoom_slide';
+
+  // Passthrough & Multi-Camera AI Wireframe Space Mapping constants
+  static const String cameraSourceVisorFront = 'visor_front';
+  static const String cameraSourceJoystickRear = 'joystick_rear';
+  static const String cameraSourceJoystickFront = 'joystick_front';
+
+  static const double defaultSafetyProximityRadiusMeters = 1.15;
+  static const double criticalSafetyProximityRadiusMeters = 0.55;
+  static const double glanceDownPitchThresholdRadians = -0.48; // ~ -27.5 deg
+  static const double fullGlanceDownPitchRadians = -0.85; // ~ -48.7 deg
+  static const double defaultContourStrokeWidth = 2.2;
+
+  static const int contourColorFloorBoundaryArgb = 0xFF00F5D4;
+  static const int contourColorWallArgb = 0xFF3A86FF;
+  static const int contourColorFurnitureArgb = 0xFFFFBE0B;
+  static const int contourColorPersonPetArgb = 0xFFFF006E;
+  static const int contourColorObstacleAlertArgb = 0xFFFF3B30;
+  static const int contourColorHandControllerArgb = 0xFF8338EC;
 }
