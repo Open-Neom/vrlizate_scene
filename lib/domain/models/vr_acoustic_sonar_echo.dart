@@ -11,7 +11,7 @@ class VrAcousticSonarEcho {
     this.dualMicPhaseDelaySeconds = 0.0,
     this.micBaselineMeters =
         VrSceneConstants.defaultSmartphoneMicBaselineMeters,
-    this.reflectionAmplitude = 0.75,
+    this.reflectionAmplitude = VrSceneConstants.defaultSonarReflectionAmplitude,
     this.isBistatic = false,
     this.bistaticDirectDistanceMeters = 0.0,
   });

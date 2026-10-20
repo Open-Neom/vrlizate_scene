@@ -25,11 +25,14 @@ class VrSpatialCaptureScheduler {
   /// power budget for the current frame given [userSpeedMetersPerSec] and
   /// [visorFrameTimeMs].
   VrSpatialCaptureResourceSnapshot evaluateResourceBudget({
-    double userSpeedMetersPerSec = 0.25,
-    double visorFrameTimeMs = 8.3,
-    double joystickHeightMeters = 1.05,
+    double userSpeedMetersPerSec =
+        VrSceneConstants.defaultUserSpeedMetersPerSec,
+    double visorFrameTimeMs = VrSceneConstants.defaultNominalVisorFrameTimeMs,
+    double joystickHeightMeters =
+        VrSceneConstants.defaultJoystickWaistHeightMeters,
   }) {
-    final isMoving = userSpeedMetersPerSec > 0.12;
+    final isMoving =
+        userSpeedMetersPerSec > VrSceneConstants.movingSpeedThresholdMetersPerSec;
     final visorUnderThermalOrFrameLoad =
         visorFrameTimeMs > VrSceneConstants.visorThermalThrottleFrameMs;
 
@@ -76,9 +79,15 @@ class VrSpatialCaptureScheduler {
 
     return VrSpatialCaptureResourceSnapshot(
       powerMode: powerMode,
-      visorCpuLoadPercent: visorCpu.clamp(0.4, 15.0),
-      joystickCpuLoadPercent: joystickCpu.clamp(0.5, 22.0),
-      visorGpuOverheadPercent: 0.40,
+      visorCpuLoadPercent: visorCpu.clamp(
+        VrSceneConstants.minVisorCpuLoadPercent,
+        VrSceneConstants.maxVisorCpuLoadPercent,
+      ),
+      joystickCpuLoadPercent: joystickCpu.clamp(
+        VrSceneConstants.minJoystickCpuLoadPercent,
+        VrSceneConstants.maxJoystickCpuLoadPercent,
+      ),
+      visorGpuOverheadPercent: VrSceneConstants.visorGpuWireframeOverheadPercent,
       estimatedExtraPowerMilliwattsVisor: visorMw,
       estimatedExtraPowerMilliwattsJoystick: joystickMw,
       activeModalities: supported,
@@ -87,7 +96,8 @@ class VrSpatialCaptureScheduler {
         joystickHeightMeters: joystickHeightMeters,
       ),
       isVisorFrameBudgetProtected:
-          offloadToJoystick && visorCpu < 3.5,
+          offloadToJoystick &&
+          visorCpu < VrSceneConstants.protectedVisorCpuMaxPercent,
     );
   }
 
@@ -97,13 +107,16 @@ class VrSpatialCaptureScheduler {
   bool shouldSampleModality({
     required VrSensingModality modality,
     required double elapsedSeconds,
-    double userSpeedMetersPerSec = 0.25,
-    double visorFrameTimeMs = 8.3,
+    double userSpeedMetersPerSec =
+        VrSceneConstants.defaultUserSpeedMetersPerSec,
+    double visorFrameTimeMs = VrSceneConstants.defaultNominalVisorFrameTimeMs,
   }) {
     if (!profile.supportedModalities.contains(modality)) return false;
     final rateHz = _targetRateHzFor(
       modality: modality,
-      isMoving: userSpeedMetersPerSec > 0.12,
+      isMoving:
+          userSpeedMetersPerSec >
+          VrSceneConstants.movingSpeedThresholdMetersPerSec,
       visorUnderLoad:
           visorFrameTimeMs > VrSceneConstants.visorThermalThrottleFrameMs,
     );
@@ -123,25 +136,50 @@ class VrSpatialCaptureScheduler {
     required bool visorUnderLoad,
   }) {
     final scale = switch (powerMode) {
-      VrSpatialCapturePowerMode.ultraLowPower => 0.4,
-      VrSpatialCapturePowerMode.balancedAdaptive => isMoving ? 1.0 : 0.5,
-      VrSpatialCapturePowerMode.highPrecisionScan => 1.5,
+      VrSpatialCapturePowerMode.ultraLowPower =>
+        VrSceneConstants.rateScaleUltraLowPower,
+      VrSpatialCapturePowerMode.balancedAdaptive =>
+        isMoving
+            ? VrSceneConstants.rateScaleAdaptiveMoving
+            : VrSceneConstants.rateScaleAdaptiveIdle,
+      VrSpatialCapturePowerMode.highPrecisionScan =>
+        VrSceneConstants.rateScaleHighPrecision,
       VrSpatialCapturePowerMode.joystickOffloadedVisorPriority =>
-        isMoving ? 1.0 : 0.5,
+        isMoving
+            ? VrSceneConstants.rateScaleAdaptiveMoving
+            : VrSceneConstants.rateScaleAdaptiveIdle,
     };
 
     return switch (modality) {
-      VrSensingModality.imuFootstepVibrometry => 100.0,
-      VrSensingModality.differentialBarometer => 25.0,
-      VrSensingModality.cameraPdafFocusDepth => 30.0 * scale,
+      VrSensingModality.imuFootstepVibrometry =>
+        VrSceneConstants.baseRateImuVibrometryHz,
+      VrSensingModality.differentialBarometer =>
+        VrSceneConstants.baseRateBarometerHz,
+      VrSensingModality.cameraPdafFocusDepth =>
+        VrSceneConstants.baseRatePdafDepthHz * scale,
       VrSensingModality.triCameraVision =>
-        (visorUnderLoad ? 8.0 : 12.0) * scale,
-      VrSensingModality.acousticSonarEcho => 12.0 * scale,
-      VrSensingModality.ultraWidebandToF => 20.0 * scale,
-      VrSensingModality.magneticAnomalyField => 10.0 * scale,
-      VrSensingModality.ambientLightAndIrProximity => 5.0 * scale,
-      VrSensingModality.bluetoothBleRadar => (isMoving ? 2.0 : 0.25) * scale,
-      VrSensingModality.wifiRfSensing => (isMoving ? 1.0 : 0.10) * scale,
+        (visorUnderLoad
+                ? VrSceneConstants.baseRateTriCameraThrottledHz
+                : VrSceneConstants.baseRateTriCameraNormalHz) *
+            scale,
+      VrSensingModality.acousticSonarEcho =>
+        VrSceneConstants.baseRateAcousticSonarHz * scale,
+      VrSensingModality.ultraWidebandToF =>
+        VrSceneConstants.baseRateUwbToFHz * scale,
+      VrSensingModality.magneticAnomalyField =>
+        VrSceneConstants.baseRateMagnetometerHz * scale,
+      VrSensingModality.ambientLightAndIrProximity =>
+        VrSceneConstants.baseRateAmbientLightHz * scale,
+      VrSensingModality.bluetoothBleRadar =>
+        (isMoving
+                ? VrSceneConstants.baseRateBleMovingHz
+                : VrSceneConstants.baseRateBleIdleHz) *
+            scale,
+      VrSensingModality.wifiRfSensing =>
+        (isMoving
+                ? VrSceneConstants.baseRateWifiMovingHz
+                : VrSceneConstants.baseRateWifiIdleHz) *
+            scale,
     };
   }
 }

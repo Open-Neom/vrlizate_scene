@@ -1,3 +1,5 @@
+import 'dart:ui' show Size;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart';
 import 'package:vrlizate_scene/vrlizate_scene.dart';
@@ -157,6 +159,39 @@ void main() {
         ),
         isFalse,
       );
+    });
+
+    test('VrSpatialWireframePainter projects 360 room, floor, feet, and hands across 78-deg FOV and head yaw/pitch', () {
+      const viewport = Size(800, 600);
+      // 1) Forward-facing head pose tilted slightly down (pitch = -0.25 rad):
+      //    feet on floor at (x = -0.18, y = 0.0, z = -0.68) relative to head at y = 0.45m
+      //    are visible inside the 78 deg vertical FOV!
+      final pitchedHead = Quaternion.axisAngle(Vector3(1.0, 0.0, 0.0), -0.25);
+      final leftFootProj = VrSpatialWireframePainter.projectPointToEye(
+        worldPoint: Vector3(-0.18, 0.0, -0.68),
+        viewerPosition: Vector3(0.0, 0.45, 0.0),
+        viewerOrientation: pitchedHead,
+        viewportSize: viewport,
+      );
+      expect(leftFootProj, isNotNull);
+      expect(leftFootProj!.dx, lessThan(viewport.width * 0.5));
+      expect(leftFootProj.dy, greaterThan(viewport.height * 0.5));
+      expect(leftFootProj.dy, lessThan(viewport.height));
+
+      // 2) Rotate head 90 degrees right (yaw = -pi/2) -> point on right wall (x = 2.0, z = 0.0) projects to screen center
+      final rightYawHead = Quaternion.axisAngle(
+        Vector3(0.0, 1.0, 0.0),
+        -1.5707963,
+      );
+      final rightWallProj = VrSpatialWireframePainter.projectPointToEye(
+        worldPoint: Vector3(2.0, 1.6, 0.0),
+        viewerPosition: Vector3(0.0, 1.6, 0.0),
+        viewerOrientation: rightYawHead,
+        viewportSize: viewport,
+      );
+      expect(rightWallProj, isNotNull);
+      expect(rightWallProj!.dx, closeTo(viewport.width * 0.5, 2.0));
+      expect(rightWallProj.dy, closeTo(viewport.height * 0.5, 2.0));
     });
   });
 }

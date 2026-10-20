@@ -34,8 +34,10 @@ class VrSpatialPassthroughOverlay extends StatelessWidget {
       viewerPosition: viewerPosition,
       headPitchRadians: headPitchRadians,
     );
-    if (visibility.wireframeOpacity <= 0.01 &&
-        visibility.cameraFeedOpacity <= 0.01) {
+    if (visibility.wireframeOpacity <=
+            VrSceneConstants.minRenderableWireframeOpacity &&
+        visibility.cameraFeedOpacity <=
+            VrSceneConstants.minRenderableWireframeOpacity) {
       return const SizedBox.shrink();
     }
 
@@ -45,12 +47,16 @@ class VrSpatialPassthroughOverlay extends StatelessWidget {
       return Stack(
         fit: StackFit.expand,
         children: [
-          if (cameraPreview != null && visibility.cameraFeedOpacity > 0.01)
+          if (cameraPreview != null &&
+              visibility.cameraFeedOpacity >
+                  VrSceneConstants.minRenderableWireframeOpacity)
             Opacity(
               opacity: visibility.cameraFeedOpacity,
               child: cameraPreview,
             ),
-          if (segments.isNotEmpty && visibility.wireframeOpacity > 0.01)
+          if (segments.isNotEmpty &&
+              visibility.wireframeOpacity >
+                  VrSceneConstants.minRenderableWireframeOpacity)
             CustomPaint(
               painter: VrSpatialWireframePainter(
                 segments: segments,

@@ -78,6 +78,24 @@ abstract interface class VrSpatialPoseSource {
   Future<void> stop();
 }
 
+/// Bi-directional frame bridge between [StereoSceneView]'s [StereoHeadRig] and
+/// the multi-modal spatial perception engine (Tri-Camera + Ultrasonic Sonar +
+/// BLE/Wi-Fi Synthetic LiDAR).
+///
+/// Allows 3DoF head rotation (`HeadTracker`) and thumbstick locomotion on the
+/// rig to orient the 360° spatial scanner and passthrough wireframe in real
+/// time, while feeding bipedal foot locomotion (Cám 2) and optical depth
+/// odometry (Cám 1) back into the 3D scene rig.
+abstract interface class VrSceneRigSpatialBridge {
+  vm.Vector3 syncRigPoseAndSampleLocomotion({
+    required vm.Vector3 rigEyeCenter,
+    required double rigYaw,
+    required double rigPitch,
+    required double dtSeconds,
+    required bool nativeVioTracking,
+  });
+}
+
 /// Explicit opt-in. The source is leased only by an active, resumed scene.
 ///
 /// Calibration maps eye-center coordinates into the source camera coordinates.

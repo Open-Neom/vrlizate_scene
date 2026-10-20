@@ -15,7 +15,8 @@ import '../models/vr_spatial_contour_segment.dart';
 class VrMultiCameraSpaceMapper {
   VrMultiCameraSpaceMapper({
     this.mode = VrPassthroughMode.multiCameraHybridSpace,
-    this.safetyRadiusMeters = VrSceneConstants.defaultSafetyProximityRadiusMeters,
+    this.safetyRadiusMeters =
+        VrSceneConstants.defaultSafetyProximityRadiusMeters,
     double controllerPassthroughMix = 0.0,
   }) : _controllerPassthroughMix = controllerPassthroughMix.clamp(0.0, 1.0);
 
@@ -44,10 +45,11 @@ class VrMultiCameraSpaceMapper {
 
   /// All active 3D wireframe contour segments (object bounding contours + free
   /// floor/wall edge segments).
-  List<VrSpatialContourSegment> get allContourSegments => <VrSpatialContourSegment>[
-    for (final obj in _objectsById.values) ...obj.contourSegments,
-    ..._freeContours,
-  ];
+  List<VrSpatialContourSegment> get allContourSegments =>
+      <VrSpatialContourSegment>[
+        for (final obj in _objectsById.values) ...obj.contourSegments,
+        ..._freeContours,
+      ];
 
   /// Registers or updates a 3D AI-detected object in the shared room map.
   void upsertObject(VrDetectedSpatialObject object) {
@@ -74,8 +76,10 @@ class VrMultiCameraSpaceMapper {
     required Vector2 uvEnd,
     required Vector3 cameraPosition,
     required Quaternion cameraOrientation,
-    double horizontalFovRadians = 1.308996939,
-    double verticalFovRadians = 1.0471975512,
+    double horizontalFovRadians =
+        VrSceneConstants.defaultContourHorizontalFovRadians,
+    double verticalFovRadians =
+        VrSceneConstants.defaultContourVerticalFovRadians,
     double? depthMeters,
     double floorY = 0.0,
     VrSpatialObjectCategory category = VrSpatialObjectCategory.floorBoundary,
@@ -142,23 +146,32 @@ class VrMultiCameraSpaceMapper {
     switch (mode) {
       case VrPassthroughMode.off:
         if (mix > 0.0) {
-          return (
-            wireframeOpacity: mix,
-            cameraFeedOpacity: mix,
-          );
+          return (wireframeOpacity: mix, cameraFeedOpacity: mix);
         }
         return (wireframeOpacity: 0.0, cameraFeedOpacity: 0.0);
       case VrPassthroughMode.visorCameraPassthrough:
         final scale = mix > 0.0 ? mix : 1.0;
         return (
-          wireframeOpacity: (0.35 * scale).clamp(0.0, 1.0),
-          cameraFeedOpacity: (0.85 * scale).clamp(0.0, 1.0),
+          wireframeOpacity:
+              (VrSceneConstants.visorPassthroughWireframeScale * scale).clamp(
+                0.0,
+                1.0,
+              ),
+          cameraFeedOpacity:
+              (VrSceneConstants.visorPassthroughCameraScale * scale).clamp(
+                0.0,
+                1.0,
+              ),
         );
       case VrPassthroughMode.aiWireframeContours:
         final scale = mix > 0.0 ? mix : 1.0;
         return (
           wireframeOpacity: scale.clamp(0.0, 1.0),
-          cameraFeedOpacity: (mix * 0.65).clamp(0.0, 1.0),
+          cameraFeedOpacity:
+              (mix * VrSceneConstants.wireframeModeCameraMixScale).clamp(
+                0.0,
+                1.0,
+              ),
         );
       case VrPassthroughMode.multiCameraHybridSpace:
         final nearestDist = nearestObstacleDistanceMeters(viewerPosition);
@@ -167,15 +180,17 @@ class VrMultiCameraSpaceMapper {
           proximityFactor =
               ((safetyRadiusMeters - nearestDist) /
                       math.max(
-                        0.1,
+                        VrSceneConstants.minFloorRayDistanceMeters,
                         safetyRadiusMeters -
-                            VrSceneConstants.criticalSafetyProximityRadiusMeters,
+                            VrSceneConstants
+                                .criticalSafetyProximityRadiusMeters,
                       ))
                   .clamp(0.0, 1.0);
         }
 
         var glanceDownFactor = 0.0;
-        if (headPitchRadians < VrSceneConstants.glanceDownPitchThresholdRadians) {
+        if (headPitchRadians <
+            VrSceneConstants.glanceDownPitchThresholdRadians) {
           glanceDownFactor =
               ((VrSceneConstants.glanceDownPitchThresholdRadians -
                           headPitchRadians) /
@@ -185,10 +200,19 @@ class VrMultiCameraSpaceMapper {
         }
 
         final wireframeAlpha = math
-            .max(mix, math.max(0.20, math.max(proximityFactor, glanceDownFactor)))
+            .max(
+              mix,
+              math.max(
+                VrSceneConstants.hybridBaseWireframeOpacity,
+                math.max(proximityFactor, glanceDownFactor),
+              ),
+            )
             .clamp(0.0, 1.0);
         final autoCameraAlpha =
-            (glanceDownFactor * 0.75 + proximityFactor * 0.35).clamp(0.0, 0.85);
+            (glanceDownFactor * VrSceneConstants.hybridGlanceDownCameraWeight +
+                    proximityFactor *
+                        VrSceneConstants.hybridProximityCameraWeight)
+                .clamp(0.0, VrSceneConstants.hybridMaxAutoCameraOpacity);
         final cameraAlpha = math.max(mix, autoCameraAlpha).clamp(0.0, 1.0);
         return (
           wireframeOpacity: wireframeAlpha,
@@ -225,13 +249,17 @@ class VrMultiCameraSpaceMapper {
     required double? depthMeters,
     required double floorY,
   }) {
-    if (depthMeters != null && depthMeters > 0.05) {
+    if (depthMeters != null &&
+        depthMeters > VrSceneConstants.minValidContourDepthMeters) {
       return origin + ray * depthMeters;
     }
-    if (ray.y < -0.05 && origin.y > floorY) {
-      final t = ((floorY - origin.y) / ray.y).clamp(0.10, 6.0);
+    if (ray.y < VrSceneConstants.minFloorRaySlopeY && origin.y > floorY) {
+      final t = ((floorY - origin.y) / ray.y).clamp(
+        VrSceneConstants.minFloorRayDistanceMeters,
+        VrSceneConstants.maxFloorRayDistanceMeters,
+      );
       return origin + ray * t;
     }
-    return origin + ray * 1.5;
+    return origin + ray * VrSceneConstants.defaultFallbackRayDepthMeters;
   }
 }

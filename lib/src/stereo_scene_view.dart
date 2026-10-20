@@ -303,6 +303,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   );
   VrSpatialTrackingController? _spatial;
   VrSpatialTrackingScope? _spatialScope;
+  VrSceneRigSpatialBridge? _spatialBridge;
   bool _ownedHeadTrackerStarted = false;
   bool _appResumed =
       WidgetsBinding.instance.lifecycleState == null ||
@@ -632,6 +633,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   void _syncSpatialTracking() {
     final scope = VrSpatialTrackingScope.maybeOf(context);
+    _spatialBridge = scope?.source is VrSceneRigSpatialBridge
+        ? scope!.source as VrSceneRigSpatialBridge
+        : null;
     final sceneActive =
         _appResumed &&
         TickerMode.valuesOf(context).enabled &&
@@ -731,6 +735,27 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     );
     final hadPointer = _input.pointerActive;
     _input.update(dt);
+    final spatialBridge = _spatialBridge;
+    if (spatialBridge != null) {
+      final nativeVioActive = _spatial?.isTracking ?? false;
+      final physicalDelta = spatialBridge.syncRigPoseAndSampleLocomotion(
+        rigEyeCenter: _rig.eyeCenter,
+        rigYaw: _rig.yaw,
+        rigPitch: _rig.pitch,
+        dtSeconds: dt,
+        nativeVioTracking: nativeVioActive,
+      );
+      if (!nativeVioActive && physicalDelta.length2 > 1e-9) {
+        _rig.eyeCenter.x += physicalDelta.x;
+        _rig.eyeCenter.z += physicalDelta.z;
+        if (physicalDelta.y.abs() > 1e-4) {
+          _rig.eyeCenter.y = (_rig.eyeCenter.y + physicalDelta.y).clamp(
+            0.85,
+            2.15,
+          );
+        }
+      }
+    }
     view.onInteractionRay?.call(_input.ray);
 
     final t = elapsed.inMicroseconds / 1000000.0;

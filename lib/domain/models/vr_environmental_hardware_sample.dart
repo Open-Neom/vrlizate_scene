@@ -91,12 +91,11 @@ class VrEnvironmentalHardwareSample {
   /// the camera's Dual-Pixel PDAF voice-coil lens position.
   double? get pdafFocusDepthMeters {
     final diopters = lensFocusDistanceDiopters;
-    if (diopters == null ||
-        diopters < VrSceneConstants.minPdafFocusDiopters) {
+    if (diopters == null || diopters < VrSceneConstants.minPdafFocusDiopters) {
       return null;
     }
     return (1.0 / diopters).clamp(
-      0.10,
+      VrSceneConstants.minPdafFocusDistanceMeters,
       VrSceneConstants.maxPdafFocusDistanceMeters,
     );
   }

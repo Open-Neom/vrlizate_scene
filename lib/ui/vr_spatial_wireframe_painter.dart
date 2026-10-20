@@ -14,7 +14,8 @@ class VrSpatialWireframePainter extends CustomPainter {
     required this.viewerPosition,
     required this.viewerOrientation,
     this.eyeOffsetMeters = 0.0,
-    this.verticalFovRadians = 1.0471975512,
+    this.verticalFovRadians =
+        VrSceneConstants.defaultEyeViewportVerticalFovRadians,
     this.opacity = 1.0,
   });
 
@@ -30,7 +31,11 @@ class VrSpatialWireframePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final clampedOpacity = opacity.clamp(0.0, 1.0);
-    if (clampedOpacity <= 0.01 || segments.isEmpty || size.isEmpty) return;
+    if (clampedOpacity <= VrSceneConstants.minRenderableWireframeOpacity ||
+        segments.isEmpty ||
+        size.isEmpty) {
+      return;
+    }
 
     final aspect = size.width / math.max(1.0, size.height);
     final focalY = 1.0 / math.tan(verticalFovRadians * 0.5);
@@ -47,8 +52,13 @@ class VrSpatialWireframePainter extends CustomPainter {
     final glowPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = VrSceneConstants.defaultContourStrokeWidth * 2.4
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.0);
+      ..strokeWidth =
+          VrSceneConstants.defaultContourStrokeWidth *
+          VrSceneConstants.wireframeGlowWidthMultiplier
+      ..maskFilter = const MaskFilter.blur(
+        BlurStyle.normal,
+        VrSceneConstants.wireframeGlowBlurSigma,
+      );
 
     final corePaint = Paint()
       ..style = PaintingStyle.stroke
@@ -66,20 +76,56 @@ class VrSpatialWireframePainter extends CustomPainter {
       );
 
       // Both endpoints must be in front of the near clip plane (z < -0.08)
-      if (p0Cam.z >= -0.08 || p1Cam.z >= -0.08) continue;
+      if (p0Cam.z >= VrSceneConstants.wireframeNearClipPlaneZ ||
+          p1Cam.z >= VrSceneConstants.wireframeNearClipPlaneZ) {
+        continue;
+      }
 
       final s0 = _projectToScreen(p0Cam, size, focalX, focalY);
       final s1 = _projectToScreen(p1Cam, size, focalX, focalY);
 
       final baseColor = Color(segment.colorArgb);
-      final alpha = (clampedOpacity * segment.confidence.clamp(0.2, 1.0))
-          .clamp(0.0, 1.0);
-      glowPaint.color = baseColor.withValues(alpha: alpha * 0.42);
+      final alpha =
+          (clampedOpacity *
+                  segment.confidence.clamp(
+                    VrSceneConstants.minSegmentConfidenceAlpha,
+                    1.0,
+                  ))
+              .clamp(0.0, 1.0);
+      glowPaint.color = baseColor.withValues(
+        alpha: alpha * VrSceneConstants.wireframeGlowAlphaMultiplier,
+      );
       corePaint.color = baseColor.withValues(alpha: alpha);
 
       canvas.drawLine(s0, s1, glowPaint);
       canvas.drawLine(s0, s1, corePaint);
     }
+  }
+
+  /// Projects a 3D world point into 2D screen coordinates for the given eye
+  /// pose and FOV, or returns `null` if behind the near clip plane (`z >= -0.08`).
+  static Offset? projectPointToEye({
+    required vm.Vector3 worldPoint,
+    required vm.Vector3 viewerPosition,
+    required vm.Quaternion viewerOrientation,
+    required Size viewportSize,
+    double eyeOffsetMeters = 0.0,
+    double verticalFovRadians =
+        VrSceneConstants.defaultEyeViewportVerticalFovRadians,
+  }) {
+    if (viewportSize.isEmpty) return null;
+    final aspect = viewportSize.width / math.max(1.0, viewportSize.height);
+    final focalY = 1.0 / math.tan(verticalFovRadians * 0.5);
+    final focalX = focalY / aspect;
+    final rightAxis = _rotateQuaternion(
+      viewerOrientation,
+      vm.Vector3(1.0, 0.0, 0.0),
+    );
+    final eyeWorld = viewerPosition + rightAxis * eyeOffsetMeters;
+    final invOrientation = viewerOrientation.conjugated();
+    final pCam = _rotateQuaternion(invOrientation, worldPoint - eyeWorld);
+    if (pCam.z >= VrSceneConstants.wireframeNearClipPlaneZ) return null;
+    return _projectToScreen(pCam, viewportSize, focalX, focalY);
   }
 
   static Offset _projectToScreen(

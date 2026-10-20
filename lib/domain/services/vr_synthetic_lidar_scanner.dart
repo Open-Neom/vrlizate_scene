@@ -24,7 +24,7 @@ import 'vr_multi_camera_space_mapper.dart';
 class VrSyntheticLidarScanner {
   VrSyntheticLidarScanner({
     this.voxelSizeMeters = VrSceneConstants.defaultLidarVoxelSizeMeters,
-  }) : assert(voxelSizeMeters > 0.02);
+  }) : assert(voxelSizeMeters > VrSceneConstants.minLidarVoxelSizeMeters);
 
   final double voxelSizeMeters;
 
@@ -86,7 +86,7 @@ class VrSyntheticLidarScanner {
     final hitPoint = sensorPosition + rayDir * distance;
     final normal = -rayDir;
 
-    final category = hitPoint.y <= 0.18
+    final category = hitPoint.y <= VrSceneConstants.floorVoxelMaxHeightMeters
         ? VrSpatialObjectCategory.floorBoundary
         : (distance <= VrSceneConstants.defaultSafetyProximityRadiusMeters
               ? VrSpatialObjectCategory.obstacle
@@ -97,7 +97,14 @@ class VrSyntheticLidarScanner {
       normal: normal,
       modality: VrSensingModality.acousticSonarEcho,
       category: category,
-      baseConfidence: (0.45 + echo.reflectionAmplitude * 0.45).clamp(0.40, 0.95),
+      baseConfidence:
+          (VrSceneConstants.sonarBaseConfidenceOffset +
+                  echo.reflectionAmplitude *
+                      VrSceneConstants.sonarAmplitudeConfidenceScale)
+              .clamp(
+                VrSceneConstants.minSonarVoxelConfidence,
+                VrSceneConstants.maxSonarVoxelConfidence,
+              ),
       acousticReflectivity: echo.reflectionAmplitude,
     );
 
@@ -125,7 +132,11 @@ class VrSyntheticLidarScanner {
       label: surfaceId,
       category: category,
       centerWorld: hitPoint,
-      extentsWorld: Vector3(halfWidth * 2.0, halfWidth * 2.0, 0.08),
+      extentsWorld: Vector3(
+        halfWidth * 2.0,
+        halfWidth * 2.0,
+        VrSceneConstants.sonarSurfaceThicknessMeters,
+      ),
       confidence: point.confidence,
       sourceCameraId: VrSceneConstants.modalityAcousticSonarEchoId,
     );
@@ -163,19 +174,26 @@ class VrSyntheticLidarScanner {
     final baselineVec = visorPosition - joystickPosition;
     final baselineLen = baselineVec.length;
     var verticalOffset = 0.0;
-    if (baselineLen > 0.10) {
+    if (baselineLen > VrSceneConstants.minDualPhoneBaselineMeters) {
       final cosElevation =
           ((distJoystick * distJoystick -
                       distVisor * distVisor -
                       baselineLen * baselineLen) /
                   (2.0 * distVisor * baselineLen))
-              .clamp(-0.85, 0.85);
-      verticalOffset = distVisor * cosElevation * 0.35;
+              .clamp(
+                -VrSceneConstants.maxRfElevationCosine,
+                VrSceneConstants.maxRfElevationCosine,
+              );
+      verticalOffset =
+          distVisor * cosElevation * VrSceneConstants.rfVerticalElevationScale;
     }
 
     final estimatedPos = Vector3(
       visorPosition.x + horizontalDir.x * distVisor,
-      math.max(0.15, visorPosition.y + verticalOffset),
+      math.max(
+        VrSceneConstants.minRfVoxelHeightMeters,
+        visorPosition.y + verticalOffset,
+      ),
       visorPosition.z + horizontalDir.z * distVisor,
     );
 
@@ -188,11 +206,14 @@ class VrSyntheticLidarScanner {
       normal: normal,
       modality: sample.modality,
       category: VrSpatialObjectCategory.table,
-      baseConfidence: sample.rttDistanceMeters != null ? 0.85 : 0.65,
+      baseConfidence: sample.rttDistanceMeters != null
+          ? VrSceneConstants.rfRttBaseConfidence
+          : VrSceneConstants.rfRssiBaseConfidence,
       rfAttenuationDb: sample.estimatedWallAttenuationDb,
     );
 
-    final anchorId = '${VrSceneConstants.syntheticRfAnchorPrefix}${sample.beaconId}';
+    final anchorId =
+        '${VrSceneConstants.syntheticRfAnchorPrefix}${sample.beaconId}';
     final boxSize = VrSceneConstants.rfBeaconBoundingSizeMeters;
     _reconstructedObjects[anchorId] = VrDetectedSpatialObject.fromBoundingBox3D(
       id: anchorId,
@@ -207,27 +228,34 @@ class VrSyntheticLidarScanner {
     // If Wi-Fi or BLE exhibits wall shadowing (>= 6 dB attenuation), infer an
     // intervening wall plane halfway along the ray.
     if (sample.hasWallShadowing) {
-      final wallPos = visorPosition + (estimatedPos - visorPosition) * 0.55;
+      final wallPos =
+          visorPosition +
+          (estimatedPos - visorPosition) *
+              VrSceneConstants.rfShadowWallInterpolationFactor;
       _upsertVoxel(
         worldPosition: wallPos,
         normal: normal,
         modality: sample.modality,
         category: VrSpatialObjectCategory.wall,
-        baseConfidence: 0.72,
+        baseConfidence: VrSceneConstants.rfShadowWallBaseConfidence,
         rfAttenuationDb: sample.estimatedWallAttenuationDb,
       );
       final shadowWallId =
           '${VrSceneConstants.syntheticRfWallShadowPrefix}${sample.beaconId}';
       _reconstructedObjects[shadowWallId] =
           VrDetectedSpatialObject.fromBoundingBox3D(
-        id: shadowWallId,
-        label: shadowWallId,
-        category: VrSpatialObjectCategory.wall,
-        centerWorld: wallPos,
-        extentsWorld: Vector3(1.20, 1.80, 0.12),
-        confidence: 0.72,
-        sourceCameraId: sample.modality.id,
-      );
+            id: shadowWallId,
+            label: shadowWallId,
+            category: VrSpatialObjectCategory.wall,
+            centerWorld: wallPos,
+            extentsWorld: Vector3(
+              VrSceneConstants.rfShadowWallWidthMeters,
+              VrSceneConstants.rfShadowWallHeightMeters,
+              VrSceneConstants.rfShadowWallDepthMeters,
+            ),
+            confidence: VrSceneConstants.rfShadowWallBaseConfidence,
+            sourceCameraId: sample.modality.id,
+          );
     }
 
     return point;
@@ -240,7 +268,7 @@ class VrSyntheticLidarScanner {
     required Vector3 worldPosition,
     required Vector3 normal,
     VrSpatialObjectCategory category = VrSpatialObjectCategory.table,
-    double confidence = 0.75,
+    double confidence = VrSceneConstants.defaultVisualDepthConfidence,
   }) {
     return _upsertVoxel(
       worldPosition: worldPosition,
@@ -275,17 +303,18 @@ class VrSyntheticLidarScanner {
           worldPosition: hit,
           normal: normal,
           modality: VrSensingModality.cameraPdafFocusDepth,
-          category: pdafDepth < 1.2
+          category: pdafDepth < VrSceneConstants.pdafTableMaxDepthMeters
               ? VrSpatialObjectCategory.table
               : VrSpatialObjectCategory.wall,
-          baseConfidence: 0.78,
+          baseConfidence: VrSceneConstants.pdafVoxelBaseConfidence,
         ),
       );
     }
 
     // 2. 3D Uncalibrated Magnetometer Ferromagnetic Anomaly (metal furniture / wall studs)
     if (sample.hasFerromagneticObstacle) {
-      final probeDist = pdafDepth ?? 0.65;
+      final probeDist =
+          pdafDepth ?? VrSceneConstants.defaultFerromagneticProbeDistanceMeters;
       final metalPos = sensorPosition + forward * probeDist;
       added.add(
         _upsertVoxel(
@@ -293,28 +322,32 @@ class VrSyntheticLidarScanner {
           normal: normal,
           modality: VrSensingModality.magneticAnomalyField,
           category: VrSpatialObjectCategory.table,
-          baseConfidence: 0.82,
+          baseConfidence: VrSceneConstants.ferromagneticVoxelBaseConfidence,
         ),
       );
     }
 
     // 3. Ambient RGB Light + CCT Window/Doorway Direction
     if (sample.detectsDaylightWindowDirection) {
-      final windowPos = sensorPosition + forward * (pdafDepth ?? 2.40);
+      final windowPos =
+          sensorPosition +
+          forward *
+              (pdafDepth ??
+                  VrSceneConstants.defaultDaylightWindowProbeDistanceMeters);
       added.add(
         _upsertVoxel(
           worldPosition: windowPos,
           normal: normal,
           modality: VrSensingModality.ambientLightAndIrProximity,
           category: VrSpatialObjectCategory.doorway,
-          baseConfidence: 0.74,
+          baseConfidence: VrSceneConstants.daylightWindowVoxelBaseConfidence,
         ),
       );
     }
 
     // 4. Ultra-Wideband (UWB) ToF + AoA
     final uwbDist = sample.uwbDistanceMeters;
-    if (uwbDist != null && uwbDist > 0.05) {
+    if (uwbDist != null && uwbDist > VrSceneConstants.minUwbRangeMeters) {
       final uwbPos = sensorPosition + forward * uwbDist;
       added.add(
         _upsertVoxel(
@@ -322,13 +355,14 @@ class VrSyntheticLidarScanner {
           normal: normal,
           modality: VrSensingModality.ultraWidebandToF,
           category: VrSpatialObjectCategory.handController,
-          baseConfidence: 0.94,
+          baseConfidence: VrSceneConstants.uwbVoxelBaseConfidence,
         ),
       );
     }
 
     // 5. IMU Heel-Strike Footstep Vibrometry (clamps floor plane y = 0)
-    if (sample.heelStrikeShockG >= 1.35) {
+    if (sample.heelStrikeShockG >=
+        VrSceneConstants.heelStrikeShockThresholdG) {
       final footFloorPos = Vector3(sensorPosition.x, 0.0, sensorPosition.z);
       added.add(
         _upsertVoxel(
@@ -336,7 +370,7 @@ class VrSyntheticLidarScanner {
           normal: Vector3(0.0, 1.0, 0.0),
           modality: VrSensingModality.imuFootstepVibrometry,
           category: VrSpatialObjectCategory.floorBoundary,
-          baseConfidence: 0.88,
+          baseConfidence: VrSceneConstants.heelStrikeVoxelBaseConfidence,
         ),
       );
     }
@@ -384,16 +418,20 @@ class VrSyntheticLidarScanner {
       ...existing.contributingModalities,
       modality,
     };
-    final isNewModality =
-        !existing.contributingModalities.contains(modality);
+    final isNewModality = !existing.contributingModalities.contains(modality);
     final synergyBonus = isNewModality
         ? VrSceneConstants.multiModalSynergyBonus
-        : VrSceneConstants.occupancyHitConfidenceDelta * 0.5;
-    final updatedConfidence = (math.max(existing.confidence, baseConfidence) +
-            synergyBonus)
-        .clamp(0.0, 1.0);
+        : VrSceneConstants.occupancyHitConfidenceDelta *
+              VrSceneConstants.voxelPositionBlendFactor;
+    final updatedConfidence =
+        (math.max(existing.confidence, baseConfidence) + synergyBonus).clamp(
+          0.0,
+          1.0,
+        );
 
-    final blendedPos = (existing.position + worldPosition) * 0.5;
+    final blendedPos =
+        (existing.position + worldPosition) *
+        VrSceneConstants.voxelPositionBlendFactor;
     final updated = VrSyntheticLidarPoint(
       voxelKey: key,
       position: blendedPos,
@@ -416,6 +454,7 @@ class VrSyntheticLidarScanner {
     final ix = (p.x / voxelSizeMeters).round();
     final iy = (p.y / voxelSizeMeters).round();
     final iz = (p.z / voxelSizeMeters).round();
-    return '$ix:$iy:$iz';
+    const sep = VrSceneConstants.voxelKeySeparator;
+    return '$ix$sep$iy$sep$iz';
   }
 }

@@ -29,17 +29,6 @@ class VrDeviceSensorPairProfile {
 
   /// Reference flagship pair: **Samsung Galaxy S25 (Visor)** + **Motorola Edge
   /// (Joystick)**.
-  ///
-  /// - **Galaxy S25 Visor:** Snapdragon 8 Elite (3 nm), 120 Hz AMOLED, 50 MP
-  ///   Dual-Pixel PDAF + 12 MP $120^\circ$ Ultra-Wide forward camera, Wi-Fi 7
-  ///   (`802.11mc/az` RTT), BLE 5.4, MEMS Barometer, 3-axis Magnetometer, RGB
-  ///   ALS, $48\text{ kHz}$ stereo mics ($b_{\text{mic}} = 14.7\text{ cm}$).
-  /// - **Motorola Edge Joystick:** 144 Hz pOLED ($240\text{ Hz}$ touch
-  ///   sampling for ultra-responsive Dual-Thumb Curtain & Wordsphere), 50 MP
-  ///   All-Pixel PDAF + 13 MP $120^\circ$ Ultra-Wide rear camera (covering a
-  ///   $3.6\text{ m}$ floor circle from waist height!), 32 MP front camera,
-  ///   Dolby Atmos stereo speakers + $15.8\text{ cm}$ dual-mic baseline,
-  ///   Wi-Fi 6E RTT, BLE 5.3.
   factory VrDeviceSensorPairProfile.s25VisorAndMotoEdgeJoystick() {
     return const VrDeviceSensorPairProfile(
       visorModelName: VrSceneConstants.referenceVisorS25ModelName,
@@ -60,7 +49,7 @@ class VrDeviceSensorPairProfile {
       supportsDifferentialBarometer: true,
       supports3AxisMagnetometer: true,
       supportsAmbientLightColorTemp: true,
-      supportsUltraWideband: false, // Base 6.2" S25 uses Ultrasonic + Wi-Fi 7 RTT
+      supportsUltraWideband: false,
       supportsImuFootstepVibrometry: true,
     );
   }
@@ -72,7 +61,8 @@ class VrDeviceSensorPairProfile {
     return const VrDeviceSensorPairProfile(
       visorModelName: VrSceneConstants.genericVisorModelName,
       joystickModelName: VrSceneConstants.genericJoystickModelName,
-      visorForwardCameraFovDegrees: VrSceneConstants.genericRearCameraFovDegrees,
+      visorForwardCameraFovDegrees:
+          VrSceneConstants.genericRearCameraFovDegrees,
       joystickRearFloorCameraFovDegrees:
           VrSceneConstants.genericRearCameraFovDegrees,
       joystickFrontBodyCameraFovDegrees:
@@ -116,10 +106,18 @@ class VrDeviceSensorPairProfile {
   /// Diameter in meters of the physical floor circle visible to the Joystick's
   /// downward rear camera when held at [joystickHeightMeters] above the floor:
   /// $D = 2 \cdot h_{\text{joy}} \cdot \tan(\text{FoV} / 2)$.
-  double floorCoverageDiameterMeters({double joystickHeightMeters = 1.05}) {
+  double floorCoverageDiameterMeters({
+    double joystickHeightMeters =
+        VrSceneConstants.defaultJoystickWaistHeightMeters,
+  }) {
     final halfFovRad =
-        (joystickRearFloorCameraFovDegrees.clamp(40.0, 140.0) * math.pi / 180.0) *
-        0.5;
+        (joystickRearFloorCameraFovDegrees.clamp(
+                  VrSceneConstants.minFloorCameraFovDegrees,
+                  VrSceneConstants.maxFloorCameraFovDegrees,
+                ) *
+                math.pi /
+                180.0) *
+            0.5;
     return 2.0 * joystickHeightMeters * math.tan(halfFovRad);
   }
 
@@ -130,7 +128,8 @@ class VrDeviceSensorPairProfile {
       if (supportsUltrasonic48kHz) VrSensingModality.acousticSonarEcho,
       VrSensingModality.wifiRfSensing,
       if (supportsBle5Radar) VrSensingModality.bluetoothBleRadar,
-      if (supportsDifferentialBarometer) VrSensingModality.differentialBarometer,
+      if (supportsDifferentialBarometer)
+        VrSensingModality.differentialBarometer,
       if (supports3AxisMagnetometer) VrSensingModality.magneticAnomalyField,
       if (supportsDualPixelPdaf) VrSensingModality.cameraPdafFocusDepth,
       if (supportsAmbientLightColorTemp)

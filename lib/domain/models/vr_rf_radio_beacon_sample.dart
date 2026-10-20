@@ -13,7 +13,7 @@ class VrRfRadioBeaconSample {
     required this.modality,
     required this.visorRssiDbm,
     required this.joystickRssiDbm,
-    this.frequencyMhz = 5180,
+    this.frequencyMhz = VrSceneConstants.defaultWifi5GhzFrequencyMhz,
     this.txPowerAtOneMeterDbm = VrSceneConstants.defaultRfTxPowerAtOneMeterDbm,
     this.pathLossExponent = VrSceneConstants.defaultIndoorPathLossExponent,
     this.rttDistanceMeters,
@@ -85,9 +85,12 @@ class VrRfRadioBeaconSample {
       estimatedWallAttenuationDb >= VrSceneConstants.rfWallShadowingThresholdDb;
 
   double _rssiToMeters(double rssiDbm) {
-    final safeExponent = math.max(1.5, pathLossExponent);
+    final safeExponent = math.max(
+      VrSceneConstants.minPathLossExponent,
+      pathLossExponent,
+    );
     final effectiveLossDb =
-        (txPowerAtOneMeterDbm - rssiDbm - estimatedWallAttenuationDb);
+        txPowerAtOneMeterDbm - rssiDbm - estimatedWallAttenuationDb;
     final rawMeters =
         math.pow(10.0, effectiveLossDb / (10.0 * safeExponent)).toDouble();
     return rawMeters.clamp(
