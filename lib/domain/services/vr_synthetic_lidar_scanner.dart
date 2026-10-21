@@ -115,6 +115,9 @@ class VrSyntheticLidarScanner {
         : Vector3(1.0, 0.0, 0.0);
     final segStart = hitPoint - tangent * halfWidth;
     final segEnd = hitPoint + tangent * halfWidth;
+    if (_reconstructedContours.length >= 32) {
+      _reconstructedContours.removeAt(0);
+    }
     _reconstructedContours.add(
       VrSpatialContourSegment(
         startWorld: segStart,
@@ -124,7 +127,7 @@ class VrSyntheticLidarScanner {
       ),
     );
 
-    _sonarSurfaceCounter++;
+    _sonarSurfaceCounter = (_sonarSurfaceCounter % 8) + 1;
     final surfaceId =
         '${VrSceneConstants.syntheticSonarWallPrefix}$_sonarSurfaceCounter';
     _reconstructedObjects[surfaceId] = VrDetectedSpatialObject.fromBoundingBox3D(

@@ -3,6 +3,8 @@
 ## 1.0.0 - 2026-10-20
 
 - Promote `vrlizate_scene` to stable `1.0.0` aligned with the Open Neom modular architecture (`lib/utils/constants/`, `lib/utils/enums/`, `lib/domain/models/`, `lib/domain/services/`, `lib/ui/`).
+- Hide center gaze dwell reticle (`_ReticlePainter`) when a remote phone controller or gamepad suppresses gaze dwell (`isGazeSuppressed`), while keeping 3D laser pointer aiming reticles active.
+- Bound `VrSyntheticLidarScanner` acoustic sonar surface ring buffer (`8` surfaces) and contour segment history (`32` segments) and wrap `VrSpatialPassthroughOverlay` eye viewports in `RepaintBoundary` to prevent memory leaks and frame drops during stereo passthrough.
 - Add 6-Channel Synthetic LiDAR & Multi-Sensor Spatial Mapping (`VrSyntheticLidarScanner`, `VrMultiCameraSpaceMapper`, `VrAcousticSonarEcho`, `VrRfRadioBeaconSample`, `VrEnvironmentalHardwareSample`, `VrSpatialWireframePainter`, `VrSonarEcholocationPainter`) fusing Tri-Camera CV, Ultrasonic FMCW Sonar, Wi-Fi/BLE RSSI+CSI+RTT, Barometer, Magnetometer, PDAF Focus Distance, ALS/IR, UWB, and IMU Floor Vibrometry into a 360° 16×6 depth grid.
 - Add `VrDeviceSensorPairProfile` (including `s25VisorWithMotoEdgeJoystick`) and `VrSpatialCaptureScheduler` for multi-rate CPU/NPU/GPU workload balancing across the Visor and Joystick smartphones.
 - Add `VrPhysicalGuardianService`, `VrGuardianAlertLevel`, and `VrGuardianProximityState` for automatic passthrough fade-in when approaching physical walls/furniture and comfort vignette during fast locomotion.

@@ -370,6 +370,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   );
   late final vm.Vector3? Function() _readPointerPosition = () =>
       _input.pointerActive ? _pointerPosition : null;
+  late final bool Function() _readGazeSuppressed = () =>
+      _activeArbiter?.isGazeSuppressed ?? false;
+  bool _lastGazeSuppressed = false;
 
   void _applyPreset(VrQualityPreset preset) {
     _preset = preset;
@@ -799,12 +802,18 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         id = node.name;
         _nodesByName[id] = node;
       }
+      final gazeSuppressed = _activeArbiter?.isGazeSuppressed ?? false;
+      if (gazeSuppressed != _lastGazeSuppressed) {
+        _lastGazeSuppressed = gazeSuppressed;
+        _pointerRepaint.markDirty();
+      }
+      if (gazeSuppressed && _dwellProgress.value != 0.0) {
+        _dwellProgress.value = 0.0;
+      }
       _gaze.update(
         dt,
         id,
-        dwellEnabled:
-            !_input.pointerActive &&
-            !(_activeArbiter?.isGazeSuppressed ?? false),
+        dwellEnabled: !_input.pointerActive && !gazeSuppressed,
       );
     }
     if (_input.pointerActive || hadPointer) _pointerRepaint.markDirty();
@@ -1077,6 +1086,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
                     stereoImageInset: _rig.stereoImageInset,
                     pointerRepaint: _pointerRepaint,
                     pointerPosition: _readPointerPosition,
+                    isGazeSuppressed: _readGazeSuppressed,
                     rig: _rig,
                   ),
                 ),
@@ -1146,6 +1156,7 @@ class _ReticlePainter extends CustomPainter {
     required this.stereoImageInset,
     required Listenable pointerRepaint,
     required this.pointerPosition,
+    required this.isGazeSuppressed,
     required this.rig,
   }) : super(
          repaint: Listenable.merge([progress, zenithProgress, pointerRepaint]),
@@ -1158,6 +1169,7 @@ class _ReticlePainter extends CustomPainter {
   final bool mono;
   final double stereoImageInset;
   final vm.Vector3? Function() pointerPosition;
+  final bool Function() isGazeSuppressed;
   final StereoHeadRig rig;
 
   void _drawReticle(
@@ -1233,9 +1245,9 @@ class _ReticlePainter extends CustomPainter {
     }
 
     // 2. Stereoscopic or Mono Gaze Reticles
-    if (showReticle) {
-      final pointer = pointerPosition();
-      final pointing = pointer != null;
+    final pointer = pointerPosition();
+    final pointing = pointer != null;
+    if (showReticle && (pointing || !isGazeSuppressed())) {
       final ring = Paint()
         ..color = (pointing ? Colors.cyanAccent : Colors.white).withValues(
           alpha: 0.75,
@@ -1318,5 +1330,6 @@ class _ReticlePainter extends CustomPainter {
       mono != oldDelegate.mono ||
       stereoImageInset != oldDelegate.stereoImageInset ||
       pointerPosition != oldDelegate.pointerPosition ||
+      isGazeSuppressed != oldDelegate.isGazeSuppressed ||
       rig != oldDelegate.rig;
 }

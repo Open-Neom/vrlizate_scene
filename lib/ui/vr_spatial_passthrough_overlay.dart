@@ -44,29 +44,31 @@ class VrSpatialPassthroughOverlay extends StatelessWidget {
     final segments = mapper.allContourSegments;
 
     Widget buildEyeViewport(double eyeOffset) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          if (cameraPreview != null &&
-              visibility.cameraFeedOpacity >
-                  VrSceneConstants.minRenderableWireframeOpacity)
-            Opacity(
-              opacity: visibility.cameraFeedOpacity,
-              child: cameraPreview,
-            ),
-          if (segments.isNotEmpty &&
-              visibility.wireframeOpacity >
-                  VrSceneConstants.minRenderableWireframeOpacity)
-            CustomPaint(
-              painter: VrSpatialWireframePainter(
-                segments: segments,
-                viewerPosition: viewerPosition,
-                viewerOrientation: viewerOrientation,
-                eyeOffsetMeters: eyeOffset,
-                opacity: visibility.wireframeOpacity,
+      return RepaintBoundary(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (cameraPreview != null &&
+                visibility.cameraFeedOpacity >
+                    VrSceneConstants.minRenderableWireframeOpacity)
+              Opacity(
+                opacity: visibility.cameraFeedOpacity,
+                child: cameraPreview,
               ),
-            ),
-        ],
+            if (segments.isNotEmpty &&
+                visibility.wireframeOpacity >
+                    VrSceneConstants.minRenderableWireframeOpacity)
+              CustomPaint(
+                painter: VrSpatialWireframePainter(
+                  segments: segments,
+                  viewerPosition: viewerPosition,
+                  viewerOrientation: viewerOrientation,
+                  eyeOffsetMeters: eyeOffset,
+                  opacity: visibility.wireframeOpacity,
+                ),
+              ),
+          ],
+        ),
       );
     }
 
