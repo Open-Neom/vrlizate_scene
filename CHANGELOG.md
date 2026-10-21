@@ -1,9 +1,12 @@
 # Changelog
 
-## 1.0.0 - 2026-10-17
+## 1.0.0 - 2026-10-20
 
-- Promote `vrlizate_scene` to stable `1.0.0` aligned with the Open Neom modular architecture (`lib/utils/constants/`, `lib/utils/enums/`, `lib/domain/services/`).
-- Add `VrSceneConstants` centralizing stereo convergence, IPD, gaze dwell, lighting preset parameters, and transition constants.
+- Promote `vrlizate_scene` to stable `1.0.0` aligned with the Open Neom modular architecture (`lib/utils/constants/`, `lib/utils/enums/`, `lib/domain/models/`, `lib/domain/services/`, `lib/ui/`).
+- Add 6-Channel Synthetic LiDAR & Multi-Sensor Spatial Mapping (`VrSyntheticLidarScanner`, `VrMultiCameraSpaceMapper`, `VrAcousticSonarEcho`, `VrRfRadioBeaconSample`, `VrEnvironmentalHardwareSample`, `VrSpatialWireframePainter`, `VrSonarEcholocationPainter`) fusing Tri-Camera CV, Ultrasonic FMCW Sonar, Wi-Fi/BLE RSSI+CSI+RTT, Barometer, Magnetometer, PDAF Focus Distance, ALS/IR, UWB, and IMU Floor Vibrometry into a 360° 16×6 depth grid.
+- Add `VrDeviceSensorPairProfile` (including `s25VisorWithMotoEdgeJoystick`) and `VrSpatialCaptureScheduler` for multi-rate CPU/NPU/GPU workload balancing across the Visor and Joystick smartphones.
+- Add `VrPhysicalGuardianService`, `VrGuardianAlertLevel`, and `VrGuardianProximityState` for automatic passthrough fade-in when approaching physical walls/furniture and comfort vignette during fast locomotion.
+- Add `VrSceneConstants` and `VrSceneTranslationConstants` centralizing stereo convergence, IPD, gaze dwell (`2.6 s`), Button B + gaze drag hold (`0.85 s`), lighting preset parameters, and transition constants.
 - Add `VrLightingPreset` (`daylight`, `neonArcade`, `warmGallery`, `deepSpace`, `sunset`) with deterministic ambient/directional colors and intensities.
 - Add `VrSceneTransitionStyle` (`instant`, `smoothFade`, `portalIris`, `zoomSlide`) and `VrSceneTransitionController` for smooth transition progress (`0.0..1.0`), fade opacity, iris aperture, and FOV warp when entering/exiting apps or portals.
 - Add `VrAvatarNode.setPose` support (`VrAvatarPose` & `VrShoulderKinematics`),
