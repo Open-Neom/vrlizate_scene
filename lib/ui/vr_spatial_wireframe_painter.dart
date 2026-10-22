@@ -49,16 +49,16 @@ class VrSpatialWireframePainter extends CustomPainter {
     final eyeWorld = viewerPosition + rightAxis * eyeOffsetMeters;
     final invOrientation = viewerOrientation.conjugated();
 
+    // Avoid MaskFilter.blur per segment: on Impeller Vulkan (EnableFlutterGPU),
+    // per-line Gaussian blur allocates two offscreen render target passes per
+    // segment, exhausting GPU memory across stereo viewports. A translucent
+    // wide stroke produces the neon halo at zero offscreen allocation cost.
     final glowPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeWidth =
           VrSceneConstants.defaultContourStrokeWidth *
-          VrSceneConstants.wireframeGlowWidthMultiplier
-      ..maskFilter = const MaskFilter.blur(
-        BlurStyle.normal,
-        VrSceneConstants.wireframeGlowBlurSigma,
-      );
+          VrSceneConstants.wireframeGlowWidthMultiplier;
 
     final corePaint = Paint()
       ..style = PaintingStyle.stroke

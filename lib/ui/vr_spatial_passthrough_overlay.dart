@@ -42,18 +42,26 @@ class VrSpatialPassthroughOverlay extends StatelessWidget {
     }
 
     final segments = mapper.allContourSegments;
+    final feedAlpha = visibility.cameraFeedOpacity.clamp(0.0, 1.0);
 
     Widget buildEyeViewport(double eyeOffset) {
       return RepaintBoundary(
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (cameraPreview != null &&
-                visibility.cameraFeedOpacity >
-                    VrSceneConstants.minRenderableWireframeOpacity)
-              Opacity(
-                opacity: visibility.cameraFeedOpacity,
-                child: cameraPreview,
+            if (feedAlpha > VrSceneConstants.minRenderableWireframeOpacity)
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment.center,
+                    radius: 0.98,
+                    colors: [
+                      Color.fromRGBO(6, 28, 44, feedAlpha * 0.72),
+                      Color.fromRGBO(4, 12, 22, feedAlpha * 0.88),
+                    ],
+                  ),
+                ),
+                child: !stereoSplit ? cameraPreview : null,
               ),
             if (segments.isNotEmpty &&
                 visibility.wireframeOpacity >

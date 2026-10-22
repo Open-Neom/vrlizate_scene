@@ -38,6 +38,7 @@ class VrMultiCameraSpaceMapper {
       <String, VrDetectedSpatialObject>{};
   final List<VrSpatialContourSegment> _freeContours =
       <VrSpatialContourSegment>[];
+  List<VrSpatialContourSegment>? _cachedContourSegments;
 
   /// All currently tracked 3D objects across the 3 cameras.
   List<VrDetectedSpatialObject> get objects =>
@@ -46,25 +47,37 @@ class VrMultiCameraSpaceMapper {
   /// All active 3D wireframe contour segments (object bounding contours + free
   /// floor/wall edge segments).
   List<VrSpatialContourSegment> get allContourSegments =>
-      <VrSpatialContourSegment>[
-        for (final obj in _objectsById.values) ...obj.contourSegments,
-        ..._freeContours,
-      ];
+      _cachedContourSegments ??= List<VrSpatialContourSegment>.unmodifiable(
+        <VrSpatialContourSegment>[
+          for (final obj in _objectsById.values) ...obj.contourSegments,
+          ..._freeContours,
+        ],
+      );
 
   /// Registers or updates a 3D AI-detected object in the shared room map.
   void upsertObject(VrDetectedSpatialObject object) {
+    if (!_objectsById.containsKey(object.id) && _objectsById.length >= 16) {
+      final oldestDynamicKey = _objectsById.keys.firstWhere(
+        (k) => k.startsWith('lidar_') || k.startsWith('ble_') || k.startsWith('verify_'),
+        orElse: () => _objectsById.keys.first,
+      );
+      _objectsById.remove(oldestDynamicKey);
+    }
     _objectsById[object.id] = object;
+    _cachedContourSegments = null;
   }
 
   /// Removes a tracked object by [id].
   void removeObject(String id) {
     _objectsById.remove(id);
+    _cachedContourSegments = null;
   }
 
   /// Clears all objects and free contours (e.g. on room recenter).
   void clear() {
     _objectsById.clear();
     _freeContours.clear();
+    _cachedContourSegments = null;
   }
 
   /// Projects a 2D image contour segment `(uvStart, uvEnd)` (normalized `0..1`)
@@ -118,6 +131,7 @@ class VrMultiCameraSpaceMapper {
       confidence: confidence,
     );
     _freeContours.add(segment);
+    _cachedContourSegments = null;
     return segment;
   }
 
