@@ -64,6 +64,7 @@ class StereoSceneView extends StatefulWidget {
     this.zenithRecenter = true,
     this.showAlignmentDivider = true,
     this.enableTempleTap = true,
+    this.templeDoubleTapToRecenter = vrSceneDefaultTempleDoubleTapToRecenter,
     this.enableHandTracking = true,
     this.handGlowColor = const Color(0xFF00E5FF),
     this.gazeEnabled = true,
@@ -143,8 +144,13 @@ class StereoSceneView extends StatefulWidget {
   /// downward-gaze controller feedback window is unaffected.
   final bool zenithRecenter;
 
-  /// Whether physical tap on visor/temple triggers instant gaze select and double-tap recenters.
+  /// Whether a physical tap on the visor/temple triggers gaze selection.
   final bool enableTempleTap;
+
+  /// Explicit opt-in for inertial double-tap recentering. Turning the head can
+  /// produce acceleration peaks; those must not reset heading by default.
+  /// Does not affect screen double taps or explicit controller commands.
+  final bool templeDoubleTapToRecenter;
 
   /// Called for a visor tap when this view has no actionable target. Retained
   /// game hosts can dispatch their primary action through the shared arbiter.
@@ -402,16 +408,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     // TickerMode and lifecycle in didChangeDependencies below.
     if (view.headTracker != null && _headTracker.canStart) _headTracker.start();
 
-    // Zero-latency temple/visor tap trigger
-    if (view.enableTempleTap && VrSensorCapabilities.supportsDeviceMotion) {
-      _tapDetector = InertialTapDetector(
-        onSingleTap: _handleTempleTap,
-        onDoubleTap: () {
-          _recenter();
-          if (view.enableHaptics) HapticFeedback.mediumImpact();
-        },
-      )..start();
-    }
+    _syncTempleTapDetector();
 
     _gaze.onDwellProgress = (_, p) {
       if (_activeArbiter != null && _activeArbiter!.isGazeSuppressed) {
@@ -573,6 +570,10 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   void didUpdateWidget(covariant _ReadyStereoSceneView oldWidget) {
     super.didUpdateWidget(oldWidget);
     final previous = oldWidget.configuration;
+    if (previous.enableTempleTap != view.enableTempleTap ||
+        previous.templeDoubleTapToRecenter != view.templeDoubleTapToRecenter) {
+      _syncTempleTapDetector();
+    }
     if (previous.showHomeControl != view.showHomeControl ||
         !identical(previous.scene, view.scene)) {
       _worldHomeLifecycle.setEnabled(view.showHomeControl);
@@ -630,6 +631,27 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     // Owned trackers reach the rig through the proxy, exactly once. An
     // external tracker may have an unrelated target and retains legacy use.
     if (view.headTracker != null) _rig.recenter();
+  }
+
+  void _syncTempleTapDetector() {
+    // Dispose first so a deferred tap from a former opt-in cannot recenter
+    // after the option is disabled or the selection callback is replaced.
+    _tapDetector?.dispose();
+    _tapDetector = null;
+    if (!view.enableTempleTap || !VrSensorCapabilities.supportsDeviceMotion)
+      return;
+    final detector = InertialTapDetector();
+    configureVrSceneTempleTapCallbacks(
+      detector,
+      doubleTapToRecenter: view.templeDoubleTapToRecenter,
+      select: _handleTempleTap,
+      recenter: () {
+        if (!mounted || !_sceneActive) return;
+        _recenter();
+        if (view.enableHaptics) HapticFeedback.mediumImpact();
+      },
+    );
+    _tapDetector = detector..start();
   }
 
   bool _sceneActive = false;
@@ -828,7 +850,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
 
   void _handleTempleTap() {
-    if (!mounted) return;
+    if (!mounted || !_sceneActive) return;
     view.onInteractionRay?.call(_input.ray);
     dispatchVrSceneTempleTap(
       pick: () => _pickInputNode(_input.ray),
@@ -1304,7 +1326,11 @@ class _ReticlePainter extends CustomPainter {
     final zp = zenithProgress.value;
     if (zp > 0) {
       if (mono) {
-        _drawZenithTarget(canvas, Offset(size.width * 0.5, size.height * 0.18), zp);
+        _drawZenithTarget(
+          canvas,
+          Offset(size.width * 0.5, size.height * 0.18),
+          zp,
+        );
       } else {
         final insetPixels = size.width * 0.25 * stereoImageInset;
         final leftZenith = Offset(

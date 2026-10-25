@@ -1,9 +1,28 @@
 import 'package:flutter_scene/scene.dart';
 import 'package:vrlizate/vrlizate.dart'
-    show GazePointer, VrInputArbiter, VrInputSource, VrInputType;
+    show
+        GazePointer,
+        InertialTapDetector,
+        VrInputArbiter,
+        VrInputSource,
+        VrInputType;
 
 import 'stereo_head_rig.dart';
 import 'vr_viewer_profile.dart';
+
+const vrSceneDefaultTempleDoubleTapToRecenter = false;
+
+/// Keep physical selection independent of optional inertial recentering.
+/// A null double-tap callback also lets the detector deliver singles immediately.
+void configureVrSceneTempleTapCallbacks(
+  InertialTapDetector detector, {
+  required bool doubleTapToRecenter,
+  required void Function() select,
+  required void Function() recenter,
+}) {
+  detector.onSingleTap = select;
+  detector.onDoubleTap = doubleTapToRecenter ? recenter : null;
+}
 
 /// Defers configuration-driven gaze exits until the next input tick, outside
 /// widget build. A disabled scene must not retain dwell or a grace target.
