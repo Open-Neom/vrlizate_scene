@@ -237,6 +237,7 @@ class _AvatarAuthor {
       }
       _face();
     }
+    _cosmetic();
     _pattern();
     final raw = _bounds(_parts);
     final scale = appearance.heightMeters / (raw.max.y - raw.min.y);
@@ -273,6 +274,125 @@ class _AvatarAuthor {
           math.pow(math.max(bounds.min.z.abs(), bounds.max.z.abs()), 2),
     );
     return VrAvatarPlan._(fitted, bounds, radius);
+  }
+
+  void _cosmetic() {
+    final id = appearance.cosmeticId;
+    if (id == null) return;
+    final orb = species == VrAvatarSpecies.orb;
+    final motion = orb ? VrAvatarMotion.hoverCore : VrAvatarMotion.body;
+    final pivot = orb ? vm.Vector3(0, .62, 0) : _waistPivot;
+    final y = orb ? .48 : .54;
+    void part(
+      String suffix,
+      VrAvatarShape shape,
+      VrAvatarSurface surface,
+      double x,
+      double py,
+      double z,
+      double sx,
+      double sy,
+      double sz, {
+      double roll = 0,
+      VrAvatarMotion? animation,
+      vm.Vector3? at,
+    }) {
+      add(
+        'cosmetic_${id}_$suffix',
+        shape,
+        surface,
+        x,
+        py,
+        z,
+        sx,
+        sy,
+        sz,
+        roll: roll,
+        motion: animation ?? motion,
+        pivot: at ?? pivot,
+      );
+    }
+
+    switch (id) {
+      case VrAvatarCosmeticCatalog.canopy:
+        final z = _frontZ(-.065, y) + .026;
+        part('seal', round, ink, -.065, y, z, .115, .115, .028);
+        for (final side in [-1.0, 1.0]) {
+          part(
+            'leaf_$side',
+            petal,
+            accent,
+            -.065 + side * .025,
+            y + .008,
+            z + .021,
+            .046,
+            .085,
+            .014,
+            roll: -side * .45,
+          );
+        }
+      case VrAvatarCosmeticCatalog.aurora:
+        final top = _bounds(_parts).max.y;
+        final r = orb ? .32 * h : .24 * h;
+        final at = orb ? pivot : vm.Vector3(0, .69, 0);
+        final animation = orb ? motion : VrAvatarMotion.head;
+        for (var n = 0; n < 4; n++) {
+          final angle = math.pi * n / 3;
+          part(
+            'arc_$n',
+            petal,
+            accent,
+            math.cos(angle) * r,
+            top + .02 + math.sin(angle) * .065,
+            .025,
+            .105,
+            .034,
+            .045,
+            roll: angle - math.pi / 2,
+            at: at,
+            animation: animation,
+          );
+        }
+      case VrAvatarCosmeticCatalog.neon:
+        final x = orb ? .35 * h : .255;
+        final py = orb ? .62 : .61;
+        part('mount', box, shade, x, py + .075, .025, .04, .26, .04);
+        for (var n = 0; n < 3; n++) {
+          final size = .05 - n * .008;
+          part(
+            'signal_$n',
+            round,
+            accent,
+            x,
+            py + .19 + n * .053,
+            .025,
+            size,
+            size,
+            size,
+          );
+        }
+      case VrAvatarCosmeticCatalog.wayfinder:
+        final z = _frontZ(0, y) + .026;
+        part('disc', round, shade, 0, y, z, .15, .15, .028);
+        // Two symmetric petals supply four compass points with two fewer
+        // retained instances than four separate needles.
+        for (var n = 0; n < 2; n++) {
+          final a = n * math.pi / 2;
+          part(
+            'point_$n',
+            petal,
+            accent,
+            0,
+            y,
+            z + .023,
+            .038,
+            .15,
+            .016,
+            roll: -a,
+          );
+        }
+        part('centre', round, pearl, 0, y, z + .038, .024, .024, .014);
+    }
   }
 
   void _groundContact({bool orb = false}) {
@@ -1322,4 +1442,3 @@ vm.Aabb3 _bounds(Iterable<VrAvatarPart> parts) {
   }
   return bounds;
 }
-

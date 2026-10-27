@@ -3,6 +3,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart'
     show
         VrGamepadButton,
+        VrGamepadStick,
         VrInputEvent,
         VrInputSource,
         VrInputType,
@@ -21,8 +22,28 @@ class VrSceneInputController {
   final void Function() recenter;
   final bool Function(Node node)? isSystemNode;
   final VrSpatialInputState state;
-  bool locomotionEnabled;
-  bool lookInputEnabled;
+  bool _locomotionEnabled, _lookInputEnabled;
+  bool _movementNeedsNeutral = false, _lookNeedsNeutral = false;
+  bool _movementWasActive = false, _lookWasActive = false;
+  VrInputSource? _movementSource, _lookSource;
+
+  bool get locomotionEnabled => _locomotionEnabled;
+  set locomotionEnabled(bool enabled) {
+    if (enabled == _locomotionEnabled) return;
+    _locomotionEnabled = enabled;
+    _movementNeedsNeutral = enabled && _movementWasActive;
+    state.moveX = state.moveY = 0;
+    _edgeTurn.reset();
+  }
+
+  bool get lookInputEnabled => _lookInputEnabled;
+  set lookInputEnabled(bool enabled) {
+    if (enabled == _lookInputEnabled) return;
+    _lookInputEnabled = enabled;
+    _lookNeedsNeutral = enabled && _lookWasActive;
+    state.lookX = state.lookY = 0;
+  }
+
   bool edgeTurnEnabled;
   final VrStickEdgeTurn _edgeTurn = VrStickEdgeTurn();
   final vm.Ray _ray = vm.Ray();
@@ -39,11 +60,13 @@ class VrSceneInputController {
     required this.activate,
     required this.recenter,
     this.isSystemNode,
-    this.locomotionEnabled = true,
-    this.lookInputEnabled = true,
+    bool locomotionEnabled = true,
+    bool lookInputEnabled = true,
     this.edgeTurnEnabled = true,
     VrSpatialInputState? state,
-  }) : state = state ?? VrSpatialInputState();
+  }) : state = state ?? VrSpatialInputState(),
+       _locomotionEnabled = locomotionEnabled,
+       _lookInputEnabled = lookInputEnabled;
 
   bool get pointerActive => state.pointerActive;
 
@@ -69,6 +92,7 @@ class VrSceneInputController {
     _updateButtonBState(event);
     if (event.handled) return;
     state.handleEvent(event);
+    _gateNavigation(event);
     if (event.type == VrInputType.recenter && event.active) {
       reset();
       event.consume();
@@ -117,6 +141,7 @@ class VrSceneInputController {
     }
     if (event.handled) return;
     state.handleEvent(event);
+    _gateNavigation(event);
     if (event.type == VrInputType.recenter && event.active) {
       reset();
       event.consume();
@@ -132,6 +157,37 @@ class VrSceneInputController {
     if (node == null) return;
     event.consume();
     activate(node);
+  }
+
+  /// Modal axes cannot replay as movement after closing. Keep pointer/head
+  /// tracking intact, and re-arm each stick only after its own neutral sample.
+  void _gateNavigation(VrInputEvent event) {
+    if (event.type != VrInputType.navigate) return;
+    final stick = event.data?['stick'];
+    if (stick != VrGamepadStick.right && stick != 'right') {
+      if (event.active || _movementSource == event.source) {
+        _movementWasActive = state.moveX != 0 || state.moveY != 0;
+        _movementSource = event.active ? event.source : null;
+      }
+      if (_movementNeedsNeutral && !_movementWasActive) {
+        _movementNeedsNeutral = false;
+      }
+      if (!_locomotionEnabled || _movementNeedsNeutral) {
+        state.moveX = state.moveY = 0;
+      }
+    }
+    if (stick != VrGamepadStick.left && stick != 'left') {
+      if (event.active || _lookSource == event.source) {
+        _lookWasActive = state.lookX != 0 || state.lookY != 0;
+        _lookSource = event.active ? event.source : null;
+      }
+      if (_lookNeedsNeutral && !_lookWasActive) {
+        _lookNeedsNeutral = false;
+      }
+      if (!_lookInputEnabled || _lookNeedsNeutral) {
+        state.lookX = state.lookY = 0;
+      }
+    }
   }
 
   void update(double dt) {
@@ -184,5 +240,8 @@ class VrSceneInputController {
     _edgeTurn.reset();
     _triggerHeld.fillRange(0, _triggerHeld.length, false);
     _buttonBHeld = false;
+    _movementNeedsNeutral = _lookNeedsNeutral = false;
+    _movementWasActive = _lookWasActive = false;
+    _movementSource = _lookSource = null;
   }
 }

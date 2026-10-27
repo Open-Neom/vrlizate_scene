@@ -87,7 +87,8 @@ class VrAvatarNode {
     _updateMaterials();
     final shapeChanged =
         appearance.species != previous.species ||
-        appearance.pattern != previous.pattern;
+        appearance.pattern != previous.pattern ||
+        appearance.cosmeticId != previous.cosmeticId;
     final proportionsChanged =
         appearance.heightMeters != previous.heightMeters ||
         appearance.headScale != previous.headScale ||
@@ -485,4 +486,3 @@ vm.Vector4 _linearArgb(int argb) {
 
   return vm.Vector4(channel(16), channel(8), channel(0), 1);
 }
-
