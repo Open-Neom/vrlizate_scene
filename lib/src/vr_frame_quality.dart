@@ -112,6 +112,18 @@ class VrFrameQualityMonitor with WidgetsBindingObserver {
 
   bool get isListening => _listening;
 
+  /// Resolves the scene's route and ticker visibility together. Non-opaque
+  /// routes (dialogs, sheets) can leave the underlying route's ticker enabled;
+  /// their timing pressure must not degrade the covered scene's quality.
+  /// Call from didChangeDependencies so route changes refresh the subscription.
+  void setActiveForContext(BuildContext context, {required bool enabled}) {
+    setActive(
+      enabled &&
+          TickerMode.valuesOf(context).enabled &&
+          (ModalRoute.isCurrentOf(context) ?? true),
+    );
+  }
+
   void setActive(bool active) {
     if (_disposed) return;
     _active = active;

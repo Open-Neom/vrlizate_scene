@@ -15,7 +15,9 @@ import 'package:vrlizate/vrlizate.dart'
         InertialTapDetector,
         VrSensorCapabilities,
         VrInputArbiter,
-        VrInputEvent;
+        VrInputEvent,
+        VrInputSource,
+        VrInputType;
 import 'package:vrlizate_widgets/vrlizate_widgets.dart'
     show VrButton3D, VrTextLabel;
 
@@ -35,6 +37,8 @@ import 'vr_controller_feedback_visuals.dart';
 import 'vr_scene_input_controller.dart';
 import 'vr_scene_home_control_lifecycle.dart';
 import 'vr_stereo_scene_layers.dart';
+import 'vr_lens_warp_post_process.dart';
+import 'vr_predictive_motion_culler.dart';
 import 'vr_scene_pointer_interaction.dart';
 import 'vr_viewer_profile.dart';
 import 'vr_zenith_recenter.dart';
@@ -229,7 +233,8 @@ class StereoSceneView extends StatefulWidget {
   final VrFixedFoveation? fixedFoveation;
 
   /// When true, sustained build/raster overruns reduce quality one tier.
-  /// Monitoring pauses with the app lifecycle and when TickerMode is disabled.
+  /// Monitoring pauses with the app lifecycle, disabled TickerMode, or a
+  /// covering route (including non-opaque dialogs).
   final bool dynamicScaling;
 
   /// Intended render cadence for adaptive quality. Null uses the current
@@ -310,6 +315,10 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   VrSpatialTrackingController? _spatial;
   VrSpatialTrackingScope? _spatialScope;
   VrSceneRigSpatialBridge? _spatialBridge;
+  VrSceneHandPoseBridge? _handBridge;
+  bool _beaconHandPointingWasActive = false;
+  bool _beaconHandPinchWasDown = false;
+  final Map<String, dynamic> _beaconHandPointerPayload = <String, dynamic>{};
   bool _ownedHeadTrackerStarted = false;
   bool _appResumed =
       WidgetsBinding.instance.lifecycleState == null ||
@@ -370,6 +379,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   VrQualityPreset? get effectivePreset => _preset;
 
   final _qualityPolicy = VrFrameQualityPolicy();
+  final _predictiveCuller = VrPredictiveMotionCuller();
   late final _qualityMonitor = VrFrameQualityMonitor(
     policy: _qualityPolicy,
     onPressure: _reduceQuality,
@@ -581,6 +591,14 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     }
     if (!identical(previous.scene, view.scene)) {
       _qualityPolicy.reset();
+      _handRig?.dispose();
+      _handRig = (view.enableHandTracking || _handBridge != null)
+          ? SimulatedHandVisuals(
+              view.scene.root,
+              view.handGlowColor,
+              hideWhenUntracked: !view.enableHandTracking,
+            )
+          : null;
       _feedbackVisuals?.dispose();
       _feedbackVisuals = null;
       _feedbackScene = null;
@@ -627,6 +645,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   void _recenter() {
     _input.reset();
+    _predictiveCuller.reset();
     _headTracker.recenter();
     // Owned trackers reach the rig through the proxy, exactly once. An
     // external tracker may have an unrelated target and retains legacy use.
@@ -661,6 +680,18 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     _spatialBridge = scope?.source is VrSceneRigSpatialBridge
         ? scope!.source as VrSceneRigSpatialBridge
         : null;
+    _handBridge = scope?.source is VrSceneHandPoseBridge
+        ? scope!.source as VrSceneHandPoseBridge
+        : null;
+    if (_handBridge != null && _handRig == null) {
+      _handRig = SimulatedHandVisuals(
+        view.scene.root,
+        view.handGlowColor,
+        hideWhenUntracked: !view.enableHandTracking,
+      );
+    } else if (_handRig != null) {
+      _handRig!.hideWhenUntracked = !view.enableHandTracking;
+    }
     final sceneActive =
         _appResumed &&
         TickerMode.valuesOf(context).enabled &&
@@ -791,9 +822,16 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       _createWorldHome();
     }
     _worldHomeButton?.update(dt);
+    final trackedHands = _handBridge?.sampleTrackedHands();
     if (_handRig != null) {
-      _handRig!.update(_rig.eyeCenter, _rig.cameraRig.rotation, t);
+      _handRig!.update(
+        _rig.eyeCenter,
+        _rig.cameraRig.rotation,
+        t,
+        trackedHands: trackedHands,
+      );
     }
+    _syncTrackedHandInteraction(trackedHands);
 
     // Hands-free zenith recenter (looking up > 55°). CameraRig pitch is
     // positive *downward* — the same convention the controller feedback's
@@ -840,6 +878,14 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     }
     if (_input.pointerActive || hadPointer) _pointerRepaint.markDirty();
     view.onTick?.call(elapsed, dt);
+    _predictiveCuller.update(
+      forward: _rig.forward,
+      screenRight: _rig.screenRight,
+      up: _rig.up,
+      eyeCenter: _rig.eyeCenter,
+      dtSeconds: dt,
+      fovRadiansY: _rig.cameraRig.fovY,
+    );
     // Vehicle demos may update bodyYaw and eye position in their onTick.
     final hadFeedback = _feedbackVisuals?.root.visible ?? false;
     _feedbackVisuals?.updatePose(_rig);
@@ -847,6 +893,83 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     if (hadFeedback || hasFeedback) {
       _feedbackRepaint.markDirty();
     }
+  }
+
+  void _syncTrackedHandInteraction(VrTrackedHandsSnapshot? trackedHands) {
+    final pointing = trackedHands?.activePointingHand;
+    // Never override an active higher-priority smartphone laser controller.
+    final remotePhoneOwnsPointer =
+        _input.pointerActive && !_beaconHandPointingWasActive;
+    if (pointing == null || remotePhoneOwnsPointer) {
+      if (_beaconHandPointingWasActive) {
+        _beaconHandPointingWasActive = false;
+        _beaconHandPinchWasDown = false;
+        if (_activeArbiter != null) {
+          _activeArbiter!.emit(
+            type: VrInputType.pointerMove,
+            source: VrInputSource.externalPeripheral,
+            active: false,
+          );
+        } else {
+          _input.state.handleEvent(
+            VrInputEvent(
+              type: VrInputType.pointerMove,
+              source: VrInputSource.externalPeripheral,
+              active: false,
+            ),
+          );
+        }
+      }
+      return;
+    }
+
+    final rel = pointing.headRelativeMeters;
+    final forwardDepth = (-rel.z).clamp(0.20, 1.25);
+    _beaconHandPointerPayload['laserX'] = (rel.x / forwardDepth).clamp(
+      -0.95,
+      0.95,
+    );
+    _beaconHandPointerPayload['laserY'] = ((rel.y + 0.06) / forwardDepth).clamp(
+      -0.95,
+      0.95,
+    );
+    _beaconHandPointerPayload['relativeToHead'] = true;
+    _beaconHandPointingWasActive = true;
+
+    if (_activeArbiter != null) {
+      _activeArbiter!.emit(
+        type: VrInputType.pointerMove,
+        source: VrInputSource.externalPeripheral,
+        data: _beaconHandPointerPayload,
+        active: true,
+      );
+    } else {
+      _input.state.handleEvent(
+        VrInputEvent(
+          type: VrInputType.pointerMove,
+          source: VrInputSource.externalPeripheral,
+          data: _beaconHandPointerPayload,
+          active: true,
+        ),
+      );
+    }
+
+    final pinching = pointing.isPinching;
+    if (pinching && !_beaconHandPinchWasDown) {
+      if (_activeArbiter != null) {
+        _activeArbiter!.emit(
+          type: VrInputType.select,
+          source: VrInputSource.externalPeripheral,
+        );
+      } else {
+        final node = _pickInputNode(_input.ray);
+        if (node != null) {
+          _activateGazeNode(node);
+          if (view.enableHaptics) HapticFeedback.selectionClick();
+        }
+      }
+    }
+    _beaconHandPinchWasDown = pinching;
   }
 
   void _handleTempleTap() {
@@ -1004,9 +1127,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         view.targetRefreshRateHz ??
         (displayHz.isFinite && displayHz > 0 ? displayHz : 60.0);
     _qualityPolicy.targetRefreshRateHz = target;
-    _qualityMonitor.setActive(
-      view.dynamicScaling && TickerMode.valuesOf(context).enabled,
-    );
+    _qualityMonitor.setActiveForContext(context, enabled: view.dynamicScaling);
   }
 
   void _reduceQuality() {
@@ -1040,17 +1161,62 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
             return _rig.buildMonoViews();
           }
           final eyes = _rig.buildStereoViews();
-          final foveation = view.fixedFoveation;
-          if (foveation == null || constraints.biggest.isEmpty) return eyes;
-          return foveation.buildViews(
-            eyes,
-            viewportSize: constraints.biggest,
-            inheritedRenderScale: view.scene.renderScale,
-            centers: [
-              Offset(0.5 + _rig.stereoImageInset / 2, 0.5),
-              Offset(0.5 - _rig.stereoImageInset / 2, 0.5),
-            ],
+          if (constraints.biggest.isEmpty) return eyes;
+          final baseOpticalCenters = [
+            Offset(0.5 + _rig.stereoImageInset / 2, 0.5),
+            Offset(0.5 - _rig.stereoImageInset / 2, 0.5),
+          ];
+          final cullState = _predictiveCuller.state;
+          final opticalCenters = _predictiveCuller.shiftOpticalCenters(
+            baseOpticalCenters,
           );
+          final foveation = view.fixedFoveation;
+          if (foveation != null) {
+            return foveation.buildViews(
+              eyes,
+              viewportSize: constraints.biggest,
+              inheritedRenderScale: view.scene.renderScale,
+              centers: opticalCenters,
+            );
+          }
+          final profile = _viewerProfile;
+          final baseW = profile?.activeLensWidthFraction ?? 1.0;
+          final baseH = profile?.activeLensHeightFraction ?? 1.0;
+          final effW = (baseW * cullState.saccadicScissorScale).clamp(
+            0.45,
+            1.0,
+          );
+          final effH = (baseH * cullState.saccadicScissorScale).clamp(
+            0.45,
+            1.0,
+          );
+          if (effW < 0.999 ||
+              effH < 0.999 ||
+              cullState.dynamicFarCullMeters != null) {
+            return VrFixedFoveation.cropStereoViewsToActiveLens(
+              eyes,
+              viewportSize: constraints.biggest,
+              widthFraction: effW,
+              heightFraction: effH,
+              inheritedRenderScale: view.scene.renderScale,
+              centers: opticalCenters,
+              cullingPlanesBuilder: (eyeIndex, cropRect, fullEyeAspect) =>
+                  VrPredictiveMotionCuller.buildPredictiveEyeCullingPlanes(
+                    eyePosition: _rig.eyePosition(
+                      eyeIndex == 0 ? StereoEye.left : StereoEye.right,
+                    ),
+                    forward: _rig.forward,
+                    screenRight: _rig.screenRight,
+                    up: _rig.up,
+                    fovRadiansY: _rig.cameraRig.fovY,
+                    fullEyeAspectRatio: fullEyeAspect,
+                    normalizedCropRect: cropRect,
+                    horizontalClipShift: _rig.stereoImageInset,
+                    dynamicFarCullMeters: cullState.dynamicFarCullMeters,
+                  ),
+            );
+          }
+          return eyes;
         },
         pixelRatio: dpr * preset.pixelRatioScale,
         onTick: _tick,
@@ -1058,63 +1224,68 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     );
 
     final effectiveGaze = view.gazeEnabled || _systemGazeEnabled;
-    return VrStereoSceneLayers(
-      // Keep this wrapper even when both gestures are disabled. The viewport
-      // and its captured native children must survive presentation changes.
-      scene: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanUpdate: view.touchFallback
-            ? (d) => _headTracker.applyTouchDelta(d.delta.dx, d.delta.dy)
-            : null,
-        onDoubleTap: view.doubleTapToRecenter
-            ? () {
-                _recenter();
-                if (view.enableHaptics) {
-                  HapticFeedback.mediumImpact();
+    return VrLensWarpPostProcess(
+      enabled: !isHandheldMono,
+      profile: _viewerProfile,
+      stereoImageInsetOverride: view.stereoImageInset,
+      child: VrStereoSceneLayers(
+        // Keep this wrapper even when both gestures are disabled. The viewport
+        // and its captured native children must survive presentation changes.
+        scene: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onPanUpdate: view.touchFallback
+              ? (d) => _headTracker.applyTouchDelta(d.delta.dx, d.delta.dy)
+              : null,
+          onDoubleTap: view.doubleTapToRecenter
+              ? () {
+                  _recenter();
+                  if (view.enableHaptics) {
+                    HapticFeedback.mediumImpact();
+                  }
                 }
-              }
-            : null,
-        child: scene,
-      ),
-      controllerFeedback: view.showControllerFeedback && !isHandheldMono
-          ? IgnorePointer(
-              child: CustomPaint(
-                willChange: true,
-                painter: VrControllerFeedbackPainter(
-                  repaint: _feedbackRepaint,
-                  rig: _rig,
-                  render: () => _feedbackScene?.renderViews,
-                  visible: () => _feedbackVisuals?.root.visible ?? false,
-                  // This small unlit model does not need the main scene's full
-                  // high-DPI resolve buffers or MSAA on memory-limited phones.
-                  pixelRatio: min(dpr * preset.pixelRatioScale, 1.5),
-                ),
-              ),
-            )
-          : null,
-      reticle:
-          (view.showReticle && effectiveGaze) ||
-              (view.showAlignmentDivider && !isHandheldMono) ||
-              view.zenithRecenter
-          ? RepaintBoundary(
-              child: IgnorePointer(
+              : null,
+          child: scene,
+        ),
+        controllerFeedback: view.showControllerFeedback && !isHandheldMono
+            ? IgnorePointer(
                 child: CustomPaint(
-                  painter: _ReticlePainter(
-                    progress: _dwellProgress,
-                    zenithProgress: _zenithProgress,
-                    showDivider: view.showAlignmentDivider && !isHandheldMono,
-                    showReticle: view.showReticle && effectiveGaze,
-                    mono: isHandheldMono,
-                    stereoImageInset: _rig.stereoImageInset,
-                    pointerRepaint: _pointerRepaint,
-                    pointerPosition: _readPointerPosition,
-                    isGazeSuppressed: _readGazeSuppressed,
+                  willChange: true,
+                  painter: VrControllerFeedbackPainter(
+                    repaint: _feedbackRepaint,
                     rig: _rig,
+                    render: () => _feedbackScene?.renderViews,
+                    visible: () => _feedbackVisuals?.root.visible ?? false,
+                    // This small unlit model does not need the main scene's full
+                    // high-DPI resolve buffers or MSAA on memory-limited phones.
+                    pixelRatio: min(dpr * preset.pixelRatioScale, 1.5),
                   ),
                 ),
-              ),
-            )
-          : null,
+              )
+            : null,
+        reticle:
+            (view.showReticle && effectiveGaze) ||
+                (view.showAlignmentDivider && !isHandheldMono) ||
+                view.zenithRecenter
+            ? RepaintBoundary(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _ReticlePainter(
+                      progress: _dwellProgress,
+                      zenithProgress: _zenithProgress,
+                      showDivider: view.showAlignmentDivider && !isHandheldMono,
+                      showReticle: view.showReticle && effectiveGaze,
+                      mono: isHandheldMono,
+                      stereoImageInset: _rig.stereoImageInset,
+                      pointerRepaint: _pointerRepaint,
+                      pointerPosition: _readPointerPosition,
+                      isGazeSuppressed: _readGazeSuppressed,
+                      rig: _rig,
+                    ),
+                  ),
+                ),
+              )
+            : null,
+      ),
     );
   }
 }

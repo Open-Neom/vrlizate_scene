@@ -19,6 +19,7 @@ export 'domain/models/vr_spatial_capture_resource_snapshot.dart';
 export 'domain/models/vr_spatial_contour_segment.dart';
 export 'domain/models/vr_spatial_sonar_pulse.dart';
 export 'domain/models/vr_synthetic_lidar_point.dart';
+export 'domain/services/vr_depth_color_palette.dart';
 export 'domain/services/vr_multi_camera_space_mapper.dart';
 export 'domain/services/vr_physical_guardian_service.dart';
 export 'domain/services/vr_scene_transition_controller.dart';
@@ -44,7 +45,9 @@ export 'utils/enums/vr_spatial_object_category.dart';
 export 'src/vr_device_performance.dart';
 export 'src/vr_frame_metrics.dart';
 export 'src/vr_headset_profile.dart';
+export 'src/vr_lens_warp_post_process.dart';
 export 'src/vr_fixed_foveation.dart';
+export 'src/vr_predictive_motion_culler.dart';
 export 'src/stereo_head_rig.dart';
 export 'src/stereo_hud_overlay.dart';
 export 'src/vr_demo_exit_overlay.dart';
@@ -87,7 +90,24 @@ export 'package:vrlizate/vrlizate.dart'
         VrInputSink,
         VrGamepadDriver,
         VrGamepadButton,
-        VrGamepadStick;
+        VrGamepadStick,
+        VrDigitCurlState,
+        VrThumbContactChannel,
+        VrPalmOrientationZone,
+        VrEMudraCameraRole,
+        VrCanonicalEMudra,
+        VrOpticalZoomCurve,
+        VrHandMudraSignature,
+        VrCustomEMudraBinding,
+        VrEMudraCameraObservation,
+        VrEMudraFusionState,
+        VrEMudraEngine,
+        VrOneEuroFilter,
+        VrHandRoiBounds,
+        VrTriCameraSensingSchedule,
+        VrSmallestThreeQuaternion,
+        VrCompactGamepadFrame,
+        VrCompactGamepadCodec;
 
 // 3D widgets live in their own module; re-exported here so existing
 // vrlizate_scene consumers (demos) keep working with a single import.

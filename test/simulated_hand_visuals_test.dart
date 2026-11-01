@@ -5,6 +5,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate_scene/src/simulated_hand_visuals.dart';
+import 'package:vrlizate_scene/src/vr_spatial_tracking.dart';
 
 void main() {
   Mesh emptyMesh(vm.Vector3 size, PhysicallyBasedMaterial material) =>
@@ -67,6 +68,40 @@ void main() {
       expect(nodes[index].position.x.isFinite, isTrue);
     }
     expect(eye, vm.Vector3(1, 1.6, 2));
+    hands.dispose();
+  });
+
+  test('hideWhenUntracked stays invisible in .vrlz until live Faro hand poses arrive', () {
+    final root = Node();
+    final hands = SimulatedHandVisuals(
+      root,
+      const Color(0xFF00E5FF),
+      hideWhenUntracked: true,
+      meshBuilder: emptyMesh,
+    );
+
+    hands.update(vm.Vector3(0, 1.6, 0), vm.Quaternion.identity(), 0.5);
+    expect(root.children.every((n) => !n.visible), isTrue);
+
+    final snapshot = VrTrackedHandsSnapshot(
+      timestampMicros: 1000,
+      right: VrTrackedHandSample(
+        headRelativeMeters: vm.Vector3(0.20, 0.04, -0.45),
+        confidence: 0.95,
+        raised: true,
+        pinchStrength: 0.85,
+      ),
+    );
+    hands.update(
+      vm.Vector3(0, 1.6, 0),
+      vm.Quaternion.identity(),
+      0.6,
+      trackedHands: snapshot,
+    );
+    expect(root.children.take(7).every((n) => n.visible), isTrue);
+    expect(root.children.skip(7).every((n) => !n.visible), isTrue);
+    expect(root.children.first.position.x, closeTo(-0.20, 1e-5));
+
     hands.dispose();
   });
 }

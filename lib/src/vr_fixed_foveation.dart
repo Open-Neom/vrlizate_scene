@@ -144,6 +144,101 @@ class VrFixedFoveation {
     return [...backgrounds, ...sharp];
   }
 
+  /// Crops each stereo eye [RenderView] to the real physical lens cone of a
+  /// frontal smartphone headset (`[widthFraction] × [heightFraction]`, e.g.
+  /// `0.76 × 0.84` = `-36.2%` shaded GPU pixels) while preserving exact IPD,
+  /// convergence, optical inset, and reticle pixel coordinates.
+  static List<RenderView> cropStereoViewsToActiveLens(
+    List<RenderView> eyes, {
+    required ui.Size viewportSize,
+    required double widthFraction,
+    required double heightFraction,
+    List<ui.Offset>? centers,
+    double inheritedRenderScale = 1,
+    List<vm.Plane> Function(
+      int eyeIndex,
+      ui.Rect normalizedCropRect,
+      double fullEyeAspect,
+    )? cullingPlanesBuilder,
+  }) {
+    _unitScale(widthFraction, 'widthFraction');
+    _unitScale(heightFraction, 'heightFraction');
+    if (!viewportSize.width.isFinite ||
+        !viewportSize.height.isFinite ||
+        viewportSize.isEmpty) {
+      return eyes;
+    }
+    final uncropped = widthFraction >= 0.999 && heightFraction >= 0.999;
+    if (uncropped && cullingPlanesBuilder == null) {
+      return eyes;
+    }
+    final cropped = <RenderView>[];
+    var anyModified = !uncropped;
+    for (var i = 0; i < eyes.length; i++) {
+      final eye = eyes[i];
+      if (eye.target != null) return eyes;
+      final viewport = eye.viewport ?? const ui.Rect.fromLTWH(0, 0, 1, 1);
+      final perspective = eye.camera.projection;
+      if (!_validViewport(viewport) || perspective is! PerspectiveProjection) {
+        return eyes;
+      }
+      final rawCenter = centers != null && i < centers.length
+          ? centers[i]
+          : const ui.Offset(0.5, 0.5);
+      final cx = rawCenter.dx.clamp(0.0, 1.0);
+      final cy = rawCenter.dy.clamp(0.0, 1.0);
+      final halfW = widthFraction / 2;
+      final halfH = heightFraction / 2;
+      final crop = uncropped
+          ? const ui.Rect.fromLTWH(0, 0, 1, 1)
+          : ui.Rect.fromLTWH(
+              (cx - halfW).clamp(0.0, 1 - widthFraction),
+              (cy - halfH).clamp(0.0, 1 - heightFraction),
+              widthFraction,
+              heightFraction,
+            );
+      final fullEyeAspect =
+          viewportSize.width *
+          viewport.width /
+          (viewportSize.height * viewport.height);
+      final extraPlanes =
+          cullingPlanesBuilder?.call(i, crop, fullEyeAspect) ?? const [];
+      if (extraPlanes.isNotEmpty) {
+        anyModified = true;
+      }
+      final mergedPlanes = extraPlanes.isEmpty
+          ? List.of(eye.cullingPlanes)
+          : <vm.Plane>[...eye.cullingPlanes, ...extraPlanes];
+      cropped.add(
+        RenderView(
+          camera: uncropped
+              ? eye.camera
+              : _CroppedEyeCamera(
+                  eye.camera,
+                  perspective,
+                  fullEyeAspect,
+                  crop,
+                ),
+          viewport: uncropped
+              ? viewport
+              : ui.Rect.fromLTWH(
+                  viewport.left + viewport.width * crop.left,
+                  viewport.top + viewport.height * crop.top,
+                  viewport.width * crop.width,
+                  viewport.height * crop.height,
+                ),
+          renderScale: eye.renderScale ?? inheritedRenderScale,
+          order: i,
+          filterQuality: eye.filterQuality,
+          antiAliasingMode: eye.antiAliasingMode,
+          layerMask: eye.layerMask,
+          cullingPlanes: mergedPlanes,
+        ),
+      );
+    }
+    return anyModified ? cropped : eyes;
+  }
+
   static void _unitScale(double value, String name) {
     if (!value.isFinite || value <= 0 || value > 1) {
       throw ArgumentError.value(value, name, 'Must be finite and in (0, 1]');

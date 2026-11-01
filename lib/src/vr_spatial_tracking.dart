@@ -96,6 +96,65 @@ abstract interface class VrSceneRigSpatialBridge {
   });
 }
 
+/// Measured or externally triangulated 3D pose of a single hand relative to the
+/// viewer's local head frame (`+X` right, `+Y` up, `-Z` forward, in meters).
+class VrTrackedHandSample {
+  VrTrackedHandSample({
+    required vm.Vector3 headRelativeMeters,
+    vm.Vector3? velocityMetersPerSec,
+    required this.confidence,
+    this.raised = false,
+    this.pinchStrength = 0.0,
+  }) : _headRelativeMeters = headRelativeMeters.clone(),
+       _velocityMetersPerSec =
+           velocityMetersPerSec?.clone() ?? vm.Vector3.zero();
+
+  final vm.Vector3 _headRelativeMeters;
+  final vm.Vector3 _velocityMetersPerSec;
+  final double confidence;
+  final bool raised;
+  final double pinchStrength;
+
+  vm.Vector3 get headRelativeMeters => _headRelativeMeters.clone();
+  vm.Vector3 get velocityMetersPerSec => _velocityMetersPerSec.clone();
+  bool get isTracked => confidence >= 0.30;
+  bool get isPinching => isTracked && pinchStrength >= 0.72;
+}
+
+/// Pair of 3D hands supplied by an external sensor node (such as VRlizate
+/// Desktop Estación Faro) or local hand-tracking camera pipeline.
+class VrTrackedHandsSnapshot {
+  const VrTrackedHandsSnapshot({
+    this.left,
+    this.right,
+    required this.timestampMicros,
+    this.sourceLabel = 'Estación Faro Desktop',
+  });
+
+  final VrTrackedHandSample? left;
+  final VrTrackedHandSample? right;
+  final int timestampMicros;
+  final String sourceLabel;
+
+  bool get hasTrackedHand =>
+      (left?.isTracked ?? false) || (right?.isTracked ?? false);
+
+  /// Dominant pointing hand when the user explicitly raises a hand to interact.
+  VrTrackedHandSample? get activePointingHand {
+    final r = right;
+    final l = left;
+    if (r != null && r.isTracked && r.raised) return r;
+    if (l != null && l.isTracked && l.raised) return l;
+    return null;
+  }
+}
+
+/// Optional frame bridge exposing live 3D hand poses to [StereoSceneView]
+/// (including `.vrlz` worlds where decorative idle hands are hidden).
+abstract interface class VrSceneHandPoseBridge {
+  VrTrackedHandsSnapshot? sampleTrackedHands();
+}
+
 /// Explicit opt-in. The source is leased only by an active, resumed scene.
 ///
 /// Calibration maps eye-center coordinates into the source camera coordinates.

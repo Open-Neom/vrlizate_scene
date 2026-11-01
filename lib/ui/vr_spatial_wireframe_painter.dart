@@ -1,13 +1,16 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../domain/models/vr_spatial_contour_segment.dart';
+import '../domain/services/vr_depth_color_palette.dart';
 import '../utils/constants/vr_scene_constants.dart';
 
 /// Projects 3D AI-identified object contours ([VrSpatialContourSegment]) into a
-/// single eye's perspective viewport with stereoscopic eye offset (`eyeOffsetMeters`).
+/// single eye's perspective viewport with stereoscopic eye offset (`eyeOffsetMeters`)
+/// and SDK-wide metric depth color coding (`colorByDepth`).
 class VrSpatialWireframePainter extends CustomPainter {
   VrSpatialWireframePainter({
     required this.segments,
@@ -17,6 +20,8 @@ class VrSpatialWireframePainter extends CustomPainter {
     this.verticalFovRadians =
         VrSceneConstants.defaultEyeViewportVerticalFovRadians,
     this.opacity = 1.0,
+    this.colorByDepth = true,
+    this.depthColorBlend = 0.85,
   });
 
   final List<VrSpatialContourSegment> segments;
@@ -27,6 +32,12 @@ class VrSpatialWireframePainter extends CustomPainter {
   final double eyeOffsetMeters;
   final double verticalFovRadians;
   final double opacity;
+
+  /// When true (SDK default), shifts line colors and stroke widths continuously
+  /// according to real metric distance (`meters`) from the eye so depth is
+  /// immediately legible across `.vrlz`, `.vrlw`, and passthrough overlays.
+  final bool colorByDepth;
+  final double depthColorBlend;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -84,7 +95,7 @@ class VrSpatialWireframePainter extends CustomPainter {
       final s0 = _projectToScreen(p0Cam, size, focalX, focalY);
       final s1 = _projectToScreen(p1Cam, size, focalX, focalY);
 
-      final baseColor = Color(segment.colorArgb);
+      final rawBaseColor = Color(segment.colorArgb);
       final alpha =
           (clampedOpacity *
                   segment.confidence.clamp(
@@ -92,10 +103,67 @@ class VrSpatialWireframePainter extends CustomPainter {
                     1.0,
                   ))
               .clamp(0.0, 1.0);
-      glowPaint.color = baseColor.withValues(
-        alpha: alpha * VrSceneConstants.wireframeGlowAlphaMultiplier,
-      );
-      corePaint.color = baseColor.withValues(alpha: alpha);
+
+      if (colorByDepth) {
+        final d0 = p0Cam.length;
+        final d1 = p1Cam.length;
+        final dMid = 0.5 * (d0 + d1);
+        final strokeScale = VrDepthColorPalette.strokeScaleForDistanceMeters(
+          dMid,
+        );
+        corePaint.strokeWidth =
+            VrSceneConstants.defaultContourStrokeWidth * strokeScale;
+        glowPaint.strokeWidth =
+            corePaint.strokeWidth *
+            VrSceneConstants.wireframeGlowWidthMultiplier;
+
+        if ((d0 - d1).abs() > 0.14 && (s0 - s1).distanceSquared > 16.0) {
+          final c0 = VrDepthColorPalette.blendWithCategory(
+            rawBaseColor,
+            d0,
+            depthBlend: depthColorBlend,
+            alpha: alpha,
+          );
+          final c1 = VrDepthColorPalette.blendWithCategory(
+            rawBaseColor,
+            d1,
+            depthBlend: depthColorBlend,
+            alpha: alpha,
+          );
+          final g0 = c0.withValues(
+            alpha: alpha * VrSceneConstants.wireframeGlowAlphaMultiplier,
+          );
+          final g1 = c1.withValues(
+            alpha: alpha * VrSceneConstants.wireframeGlowAlphaMultiplier,
+          );
+          glowPaint.shader = ui.Gradient.linear(s0, s1, <Color>[g0, g1]);
+          corePaint.shader = ui.Gradient.linear(s0, s1, <Color>[c0, c1]);
+        } else {
+          glowPaint.shader = null;
+          corePaint.shader = null;
+          final cMid = VrDepthColorPalette.blendWithCategory(
+            rawBaseColor,
+            dMid,
+            depthBlend: depthColorBlend,
+            alpha: alpha,
+          );
+          glowPaint.color = cMid.withValues(
+            alpha: alpha * VrSceneConstants.wireframeGlowAlphaMultiplier,
+          );
+          corePaint.color = cMid;
+        }
+      } else {
+        glowPaint.shader = null;
+        corePaint.shader = null;
+        corePaint.strokeWidth = VrSceneConstants.defaultContourStrokeWidth;
+        glowPaint.strokeWidth =
+            VrSceneConstants.defaultContourStrokeWidth *
+            VrSceneConstants.wireframeGlowWidthMultiplier;
+        glowPaint.color = rawBaseColor.withValues(
+          alpha: alpha * VrSceneConstants.wireframeGlowAlphaMultiplier,
+        );
+        corePaint.color = rawBaseColor.withValues(alpha: alpha);
+      }
 
       canvas.drawLine(s0, s1, glowPaint);
       canvas.drawLine(s0, s1, corePaint);
@@ -156,6 +224,8 @@ class VrSpatialWireframePainter extends CustomPainter {
         oldDelegate.viewerPosition != viewerPosition ||
         oldDelegate.viewerOrientation != viewerOrientation ||
         oldDelegate.eyeOffsetMeters != eyeOffsetMeters ||
-        oldDelegate.opacity != opacity;
+        oldDelegate.opacity != opacity ||
+        oldDelegate.colorByDepth != colorByDepth ||
+        oldDelegate.depthColorBlend != depthColorBlend;
   }
 }

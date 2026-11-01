@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'assets/vr_async_resource_cache.dart';
 import 'pbr_texture_synth.dart';
 
 export 'pbr_texture_synth.dart' show PbrSurface, PbrTextureRequest;
@@ -15,8 +16,9 @@ export 'pbr_texture_synth.dart' show PbrSurface, PbrTextureRequest;
 /// request, so every wall of a castle shares three GPU textures.
 abstract final class PbrTextureLibrary {
   static const int _cacheLimit = 14;
-  static final Map<String, Future<PbrTextureSet>> _pending = {};
-  static final Map<String, _Uploaded> _uploaded = {};
+  static final _uploaded = VrAsyncResourceCache<String, _Uploaded>(
+    maxEntries: _cacheLimit,
+  );
 
   /// Stable identity of a request, for the caches and for tests.
   static String cacheKey(PbrTextureRequest r) =>
@@ -38,49 +40,38 @@ abstract final class PbrTextureLibrary {
   /// Generates (in an isolate) and uploads the set for [request], or returns
   /// the cached upload. Requires GPU resources; callers gate on
   /// `Scene.isReadyToRender`.
-  static Future<_Uploaded> _load(PbrTextureRequest request) async {
-    final key = cacheKey(request);
-    final cached = _uploaded[key];
-    if (cached != null) return cached;
-    final pixels = await (_pending[key] ??= compute(
-      PbrTextureSynth.generate,
-      request,
-      debugLabel: 'pbr:${request.surface.name}',
-    ));
-    final already = _uploaded[key];
-    if (already != null) return already;
-    const sampling = TextureSampling(maxAnisotropy: 4);
-    final uploaded = _Uploaded(
-      albedo: Texture2D.fromPixels(
-        pixels.albedo,
-        pixels.size,
-        pixels.size,
-        content: TextureContent.color,
-        sampling: sampling,
-      ),
-      normal: Texture2D.fromPixels(
-        pixels.normal,
-        pixels.size,
-        pixels.size,
-        content: TextureContent.normal,
-        sampling: sampling,
-      ),
-      metallicRoughness: Texture2D.fromPixels(
-        pixels.metallicRoughness,
-        pixels.size,
-        pixels.size,
-        content: TextureContent.data,
-        sampling: sampling,
-      ),
-    );
-    _pending.remove(key);
-    if (_uploaded.length >= _cacheLimit) {
-      // Oldest first; GPU textures are released when unreferenced.
-      _uploaded.remove(_uploaded.keys.first);
-    }
-    _uploaded[key] = uploaded;
-    return uploaded;
-  }
+  static Future<_Uploaded> _load(PbrTextureRequest request) =>
+      _uploaded.load(cacheKey(request), () async {
+        final pixels = await compute(
+          PbrTextureSynth.generate,
+          request,
+          debugLabel: 'pbr:${request.surface.name}',
+        );
+        const sampling = TextureSampling(maxAnisotropy: 4);
+        return _Uploaded(
+          albedo: Texture2D.fromPixels(
+            pixels.albedo,
+            pixels.size,
+            pixels.size,
+            content: TextureContent.color,
+            sampling: sampling,
+          ),
+          normal: Texture2D.fromPixels(
+            pixels.normal,
+            pixels.size,
+            pixels.size,
+            content: TextureContent.normal,
+            sampling: sampling,
+          ),
+          metallicRoughness: Texture2D.fromPixels(
+            pixels.metallicRoughness,
+            pixels.size,
+            pixels.size,
+            content: TextureContent.data,
+            sampling: sampling,
+          ),
+        );
+      });
 
   /// Dresses [material] with the generated set of [request].
   ///
@@ -202,11 +193,14 @@ abstract final class PbrTextureLibrary {
     return true;
   }
 
-  /// Photo sets decode once per process and are shared like generated ones.
-  static final Map<String, Future<_Uploaded>> _assets = {};
+  /// Photo sets share complete map identities, with bounded LRU retention.
+  static final _assets =
+      VrAsyncResourceCache<(String, String, String), _Uploaded>(
+        maxEntries: _cacheLimit,
+      );
 
   static Future<_Uploaded> _loadAsset(PbrAssetSet set) =>
-      _assets[set.colorAsset] ??= () async {
+      _assets.load(set.resourceKey, () async {
         const sampling = TextureSampling(maxAnisotropy: 4);
         final color = await Texture2D.fromAsset(
           set.colorAsset,
@@ -228,7 +222,7 @@ abstract final class PbrTextureLibrary {
           normal: normal,
           metallicRoughness: roughness,
         );
-      }();
+      });
 
   /// [applyAsset] for several materials sharing one photo set.
   static Future<void> applyAssetAll(
@@ -259,13 +253,12 @@ abstract final class PbrTextureLibrary {
   /// Drops every cached upload (tests, memory pressure).
   @visibleForTesting
   static void clearCache() {
-    _pending.clear();
     _uploaded.clear();
     _assets.clear();
   }
 
   @visibleForTesting
-  static int get cachedSetCount => _uploaded.length;
+  static int get cachedSetCount => _uploaded.completedCount;
 }
 
 class _Uploaded {
@@ -312,6 +305,11 @@ class PbrAssetSet {
   final String roughnessAsset;
   final double tileWidthMeters;
   final double tileHeightMeters;
+
+  /// Identity of the decoded maps. UV scale is applied per material and does
+  /// not require another upload; changing relief or roughness maps does.
+  (String, String, String) get resourceKey =>
+      (colorAsset, normalAsset, roughnessAsset);
 
   /// UV repeats so the set keeps its physical scale on a face
   /// [worldWidth] × [worldHeight] meters wide.

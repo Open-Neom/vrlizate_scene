@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vrlizate_scene/src/vr_frame_quality.dart';
@@ -180,4 +181,87 @@ void main() {
     binding.report([_timing()]);
     expect(pressure, 2);
   });
+
+  testWidgets(
+    'non-opaque route pauses pressure despite an enabled scene ticker',
+    (tester) async {
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final baseline = binding.callbacks.length;
+      var pressure = 0;
+      final monitor = VrFrameQualityMonitor(
+        policy: VrFrameQualityPolicy(
+          warmupFrames: 1,
+          windowFrames: 1,
+          requiredSlowWindows: 2,
+        ),
+        binding: binding,
+        onPressure: () => pressure++,
+      );
+      addTearDown(monitor.dispose);
+      final navigator = GlobalKey<NavigatorState>();
+      final probe = GlobalKey<_QualityProbeState>();
+      await tester.pumpWidget(
+        MaterialApp(
+          navigatorKey: navigator,
+          home: _QualityProbe(key: probe, monitor: monitor),
+        ),
+      );
+      expect(monitor.isListening, isTrue);
+      expect(binding.callbacks.length, baseline + 1);
+      binding.report([_timing(), _timing()]); // warmup + one slow window
+      expect(pressure, 0);
+
+      navigator.currentState!.push<void>(
+        PageRouteBuilder<void>(
+          opaque: false,
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (_, _, _) => const SizedBox.shrink(),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(probe.currentState!.tickerEnabled, isTrue);
+      expect(monitor.isListening, isFalse);
+      expect(binding.callbacks.length, baseline);
+      binding.report(List.generate(120, (_) => _timing()));
+      expect(pressure, 0);
+
+      navigator.currentState!.pop();
+      await tester.pumpAndSettle();
+      expect(monitor.isListening, isTrue);
+      expect(binding.callbacks.length, baseline + 1);
+      binding.report([_timing()]); // fresh warmup
+      expect(pressure, 0);
+      binding.report([_timing()]); // fresh first slow window
+      expect(pressure, 0);
+      binding.report([_timing()]);
+      expect(pressure, 1);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      monitor.dispose();
+      expect(binding.callbacks.length, baseline);
+    },
+  );
+}
+
+class _QualityProbe extends StatefulWidget {
+  const _QualityProbe({super.key, required this.monitor});
+  final VrFrameQualityMonitor monitor;
+
+  @override
+  State<_QualityProbe> createState() => _QualityProbeState();
+}
+
+class _QualityProbeState extends State<_QualityProbe> {
+  bool tickerEnabled = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    tickerEnabled = TickerMode.valuesOf(context).enabled;
+    widget.monitor.setActiveForContext(context, enabled: true);
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }

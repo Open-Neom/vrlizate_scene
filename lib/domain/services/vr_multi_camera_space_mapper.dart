@@ -18,11 +18,34 @@ class VrMultiCameraSpaceMapper {
     this.safetyRadiusMeters =
         VrSceneConstants.defaultSafetyProximityRadiusMeters,
     double controllerPassthroughMix = 0.0,
-  }) : _controllerPassthroughMix = controllerPassthroughMix.clamp(0.0, 1.0);
+    bool showObjectBoundingBoxes = true,
+    this.temporalSmoothingAlpha = 0.25,
+    this.minRenderableConfidence = 0.30,
+  }) : _controllerPassthroughMix = controllerPassthroughMix.clamp(0.0, 1.0),
+       _showObjectBoundingBoxes = showObjectBoundingBoxes;
 
   VrPassthroughMode mode;
   double safetyRadiusMeters;
   double _controllerPassthroughMix;
+  bool _showObjectBoundingBoxes;
+
+  /// Exponential smoothing factor (`0.05 .. 1.0`) applied when updating an
+  /// existing [VrDetectedSpatialObject]'s 3D position, extents, and confidence
+  /// so bounding boxes glide smoothly instead of snapping frame-to-frame.
+  double temporalSmoothingAlpha;
+
+  /// Minimum object detection confidence required to emit bounding box lines.
+  double minRenderableConfidence;
+
+  /// Whether 3D object bounding boxes are rendered in [allContourSegments].
+  /// Live visor sessions default this to `false` so unverified boxes never
+  /// obstruct the user's field of view unless explicitly enabled.
+  bool get showObjectBoundingBoxes => _showObjectBoundingBoxes;
+  set showObjectBoundingBoxes(bool value) {
+    if (_showObjectBoundingBoxes == value) return;
+    _showObjectBoundingBoxes = value;
+    _cachedContourSegments = null;
+  }
 
   /// Manual passthrough mix percentage (`0.0 .. 1.0`) driven by the
   /// dual-thumb center-to-lateral slide gesture on the Smartphone Joystick.
@@ -36,6 +59,7 @@ class VrMultiCameraSpaceMapper {
 
   final Map<String, VrDetectedSpatialObject> _objectsById =
       <String, VrDetectedSpatialObject>{};
+  final Map<String, int> _objectUpdatedAtMicros = <String, int>{};
   final List<VrSpatialContourSegment> _freeContours =
       <VrSpatialContourSegment>[];
   List<VrSpatialContourSegment>? _cachedContourSegments;
@@ -44,38 +68,97 @@ class VrMultiCameraSpaceMapper {
   List<VrDetectedSpatialObject> get objects =>
       List<VrDetectedSpatialObject>.unmodifiable(_objectsById.values);
 
-  /// All active 3D wireframe contour segments (object bounding contours + free
-  /// floor/wall edge segments).
+  /// All active 3D wireframe contour segments (object bounding contours when
+  /// [showObjectBoundingBoxes] is enabled + free floor/wall edge segments).
   List<VrSpatialContourSegment> get allContourSegments =>
       _cachedContourSegments ??= List<VrSpatialContourSegment>.unmodifiable(
         <VrSpatialContourSegment>[
-          for (final obj in _objectsById.values) ...obj.contourSegments,
+          if (_showObjectBoundingBoxes)
+            for (final obj in _objectsById.values)
+              if (obj.confidence >= minRenderableConfidence)
+                ...obj.contourSegments,
           ..._freeContours,
         ],
       );
 
-  /// Registers or updates a 3D AI-detected object in the shared room map.
-  void upsertObject(VrDetectedSpatialObject object) {
-    if (!_objectsById.containsKey(object.id) && _objectsById.length >= 16) {
+  /// Registers or updates a 3D AI-detected object in the shared room map,
+  /// applying exponential temporal smoothing when [temporalSmoothingAlpha] `< 1.0`.
+  void upsertObject(VrDetectedSpatialObject object, {int? timestampMicros}) {
+    final existing = _objectsById[object.id];
+    if (existing == null && _objectsById.length >= 16) {
       final oldestDynamicKey = _objectsById.keys.firstWhere(
-        (k) => k.startsWith('lidar_') || k.startsWith('ble_') || k.startsWith('verify_'),
+        (k) =>
+            k.startsWith('lidar_') ||
+            k.startsWith('ble_') ||
+            k.startsWith('verify_'),
         orElse: () => _objectsById.keys.first,
       );
       _objectsById.remove(oldestDynamicKey);
+      _objectUpdatedAtMicros.remove(oldestDynamicKey);
     }
-    _objectsById[object.id] = object;
+
+    final alpha = temporalSmoothingAlpha.clamp(0.05, 1.0);
+    VrDetectedSpatialObject resolved = object;
+    if (existing != null && alpha < 0.999 && object.contourSegments.length == 12) {
+      final smoothedCenter =
+          existing.centerWorld +
+          (object.centerWorld - existing.centerWorld) * alpha;
+      final smoothedExtents =
+          existing.extentsWorld +
+          (object.extentsWorld - existing.extentsWorld) * alpha;
+      final smoothedConf =
+          existing.confidence +
+          (object.confidence - existing.confidence) * alpha;
+      resolved = VrDetectedSpatialObject.fromBoundingBox3D(
+        id: object.id,
+        label: object.label,
+        category: object.category,
+        centerWorld: smoothedCenter,
+        extentsWorld: smoothedExtents,
+        confidence: smoothedConf,
+        sourceCameraId: object.sourceCameraId,
+      );
+    }
+
+    _objectsById[object.id] = resolved;
+    if (timestampMicros != null) {
+      _objectUpdatedAtMicros[object.id] = timestampMicros;
+    }
+    _cachedContourSegments = null;
+  }
+
+  /// Decays confidence and prunes stale bounding boxes that have stopped
+  /// receiving real detections so ghost boxes never linger in space.
+  void pruneStaleObjects({
+    required int nowMicros,
+    int maxAgeMicros = 900000,
+  }) {
+    if (_objectUpdatedAtMicros.isEmpty) return;
+    final toRemove = <String>[];
+    for (final entry in _objectUpdatedAtMicros.entries) {
+      if (nowMicros - entry.value > maxAgeMicros) {
+        toRemove.add(entry.key);
+      }
+    }
+    if (toRemove.isEmpty) return;
+    for (final id in toRemove) {
+      _objectsById.remove(id);
+      _objectUpdatedAtMicros.remove(id);
+    }
     _cachedContourSegments = null;
   }
 
   /// Removes a tracked object by [id].
   void removeObject(String id) {
     _objectsById.remove(id);
+    _objectUpdatedAtMicros.remove(id);
     _cachedContourSegments = null;
   }
 
   /// Clears all objects and free contours (e.g. on room recenter).
   void clear() {
     _objectsById.clear();
+    _objectUpdatedAtMicros.clear();
     _freeContours.clear();
     _cachedContourSegments = null;
   }
