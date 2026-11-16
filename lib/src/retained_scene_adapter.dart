@@ -222,7 +222,10 @@ class VrRetainedGpuResources extends VrRetainedResourceFactory {
     ui.Image? image;
     try {
       image = await picture.toImage(surface.widthPixels, surface.heightPixels);
-      final texture = await fs.Texture2D.fromImage(image);
+      final texture = await fs.Texture2D.fromImage(
+        image,
+        sampling: const fs.TextureSampling(mipmaps: true, maxAnisotropy: 8),
+      );
       final material = fs.UnlitMaterial(colorTexture: texture)
         ..alphaMode = fs.AlphaMode.blend
         ..doubleSided = true
