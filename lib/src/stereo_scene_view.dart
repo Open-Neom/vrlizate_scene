@@ -3,7 +3,8 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:flutter/services.dart'
+    show DeviceOrientation, HapticFeedback, SystemChrome, SystemUiMode;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart'
@@ -495,10 +496,32 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       _handRig = SimulatedHandVisuals(view.scene.root, view.handGlowColor);
     }
     vrHandheldConsoleMode.addListener(_onDisplayModeChanged);
+    _enforceImmersiveLandscape();
+  }
+
+  void _enforceImmersiveLandscape() {
+    if (kIsWeb) return;
+    if (defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS) {
+      return;
+    }
+    if (WidgetsBinding.instance.runtimeType.toString().contains('Test')) {
+      return;
+    }
+    unawaited(
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]),
+    );
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
+    );
   }
 
   void _onDisplayModeChanged() {
     if (!mounted) return;
+    _enforceImmersiveLandscape();
     _syncSpatialTracking();
     setState(() {});
   }
@@ -745,6 +768,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         TickerMode.valuesOf(context).enabled &&
         (ModalRoute.isCurrentOf(context) ?? true);
     if (!sceneActive) _input.reset();
+    if (sceneActive && !_sceneActive) {
+      _enforceImmersiveLandscape();
+    }
     _sceneActive = sceneActive;
     if (view.headTracker == null) {
       final shouldTrackHead = sceneActive && !vrHandheldConsoleMode.value;
