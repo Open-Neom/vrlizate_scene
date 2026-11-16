@@ -9,6 +9,7 @@ import 'package:vrlizate_widgets/vrlizate_widgets.dart'
 
 import 'lathe_geometry.dart';
 import 'vr_mesh_tangents.dart';
+import 'vr_vertex_ao.dart';
 
 /// CPU-side buffers for procedural 3D sculpted primitives, enabling headless
 /// unit tests of vertex bounds, normals, CCW winding, and orthonormal tangents
@@ -20,6 +21,7 @@ final class VrSculptedArrays {
     required this.texCoords,
     required this.tangents,
     required this.indices,
+    this.colors,
   });
 
   final Float32List positions;
@@ -27,6 +29,7 @@ final class VrSculptedArrays {
   final Float32List texCoords;
   final Float32List tangents;
   final List<int> indices;
+  final Float32List? colors;
 
   int get vertexCount => positions.length ~/ 3;
   int get triangleCount => indices.length ~/ 3;
@@ -65,6 +68,7 @@ abstract final class VrSculptedGeometry {
       positions: a.positions,
       normals: a.normals,
       texCoords: a.texCoords,
+      colors: a.colors,
       tangents: a.tangents,
       indices: a.indices,
     );
@@ -76,19 +80,49 @@ abstract final class VrSculptedGeometry {
   }
 
   /// Filleted/chamfered 3D box centered at `(0, 0, 0)` with exact extents [size].
+  ///
+  /// When [groundAoStrength] `> 0`, bakes zero-shader-cost smooth floor-contact
+  /// and underside vertex occlusion into `COLOR_0`.
   static MeshGeometry beveledBox(
     vm.Vector3 size, {
     double? cornerRadius,
     double? bevelZ,
     int cornerSegments = 3,
     int bevelSegments = 2,
-  }) => VrBeveledBoxGeometry.create(
-    size,
-    cornerRadius: cornerRadius,
-    bevelZ: bevelZ,
-    cornerSegments: cornerSegments,
-    bevelSegments: bevelSegments,
-  );
+    double groundAoStrength = 0.0,
+  }) {
+    final ao = groundAoStrength.clamp(0.0, 0.85);
+    if (ao <= 0.0) {
+      return VrBeveledBoxGeometry.create(
+        size,
+        cornerRadius: cornerRadius,
+        bevelZ: bevelZ,
+        cornerSegments: cornerSegments,
+        bevelSegments: bevelSegments,
+      );
+    }
+    return _cached(
+      (
+        'beveledBoxAo',
+        (size.x * 10000).round(),
+        (size.y * 10000).round(),
+        (size.z * 10000).round(),
+        cornerRadius == null ? -1 : (cornerRadius * 10000).round(),
+        bevelZ == null ? -1 : (bevelZ * 10000).round(),
+        cornerSegments,
+        bevelSegments,
+        (ao * 1000).round(),
+      ),
+      () => beveledBoxArrays(
+        size,
+        cornerRadius: cornerRadius,
+        bevelZ: bevelZ,
+        cornerSegments: cornerSegments,
+        bevelSegments: bevelSegments,
+        groundAoStrength: ao,
+      ),
+    );
+  }
 
   static VrSculptedArrays beveledBoxArrays(
     vm.Vector3 size, {
@@ -96,6 +130,7 @@ abstract final class VrSculptedGeometry {
     double? bevelZ,
     int cornerSegments = 3,
     int bevelSegments = 2,
+    double groundAoStrength = 0.0,
   }) {
     final VrBeveledBoxArrays a = VrBeveledBoxGeometry.buildArrays(
       size,
@@ -104,12 +139,20 @@ abstract final class VrSculptedGeometry {
       cornerSegments: cornerSegments,
       bevelSegments: bevelSegments,
     );
+    final ao = groundAoStrength.clamp(0.0, 0.85);
     return VrSculptedArrays(
       positions: a.positions,
       normals: a.normals,
       texCoords: a.texCoords,
       tangents: a.tangents,
       indices: a.indices,
+      colors: ao > 0.0
+          ? VrVertexAoBaker.bakeGroundAndCreaseColors(
+              positions: a.positions,
+              normals: a.normals,
+              groundAoStrength: ao,
+            )
+          : null,
     );
   }
 
@@ -355,11 +398,13 @@ abstract final class VrSculptedGeometry {
     double height = 0.92,
     int segments = 24,
     bool centerAtOrigin = true,
+    double groundAoStrength = 0.0,
   }) {
     final br = math.max(bottomRadius.abs(), 0.02);
     final tr = math.max(topRadius.abs(), 0.02);
     final h = math.max(height.abs(), 0.05);
     final segs = segments.clamp(8, 48);
+    final ao = groundAoStrength.clamp(0.0, 0.85);
     return _cached(
       (
         'pedestal',
@@ -368,6 +413,7 @@ abstract final class VrSculptedGeometry {
         (h * 10000).round(),
         segs,
         centerAtOrigin,
+        (ao * 1000).round(),
       ),
       () => flutedPedestalArrays(
         bottomRadius: br,
@@ -375,6 +421,7 @@ abstract final class VrSculptedGeometry {
         height: h,
         segments: segs,
         centerAtOrigin: centerAtOrigin,
+        groundAoStrength: ao,
       ),
     );
   }
@@ -385,6 +432,7 @@ abstract final class VrSculptedGeometry {
     double height = 0.92,
     int segments = 24,
     bool centerAtOrigin = true,
+    double groundAoStrength = 0.0,
   }) {
     final y0 = centerAtOrigin ? -height * 0.5 : 0.0;
     final shaftBot = bottomRadius * 0.78;
@@ -410,12 +458,20 @@ abstract final class VrSculptedGeometry {
       profile,
       segments: segments.clamp(8, 48),
     );
+    final ao = groundAoStrength.clamp(0.0, 0.85);
     return VrSculptedArrays(
       positions: lathe.positions,
       normals: lathe.normals,
       texCoords: lathe.texCoords,
       tangents: lathe.tangents,
       indices: lathe.indices,
+      colors: ao > 0.0
+          ? VrVertexAoBaker.bakeGroundAndCreaseColors(
+              positions: lathe.positions,
+              normals: lathe.normals,
+              groundAoStrength: ao,
+            )
+          : null,
     );
   }
 
@@ -424,36 +480,54 @@ abstract final class VrSculptedGeometry {
     double radius = 0.26,
     double height = 4.2,
     int sides = 8,
+    double groundAoStrength = 0.0,
   }) {
     final r = math.max(radius.abs(), 0.04);
     final h = math.max(height.abs(), 0.2);
     final s = sides.clamp(4, 16);
-    return _cached(('pylon', (r * 10000).round(), (h * 10000).round(), s), () {
-      final y0 = -h * 0.5;
-      vm.Vector2 p(double radScale, double t) =>
-          vm.Vector2(r * radScale, y0 + t * h);
-      final lathe = LatheGeometry.revolveArrays([
-        p(0.0, 0.0),
-        p(1.18, 0.0),
-        p(1.18, 0.08),
-        p(0.92, 0.12),
-        p(0.86, 0.46),
-        p(0.72, 0.48),
-        p(0.72, 0.53),
-        p(0.84, 0.55),
-        p(0.76, 0.90),
-        p(0.96, 0.94),
-        p(0.55, 1.0),
-        p(0.0, 1.0),
-      ], segments: s);
-      return VrSculptedArrays(
-        positions: lathe.positions,
-        normals: lathe.normals,
-        texCoords: lathe.texCoords,
-        tangents: lathe.tangents,
-        indices: lathe.indices,
-      );
-    });
+    final ao = groundAoStrength.clamp(0.0, 0.85);
+    return _cached(
+      (
+        'pylon',
+        (r * 10000).round(),
+        (h * 10000).round(),
+        s,
+        (ao * 1000).round(),
+      ),
+      () {
+        final y0 = -h * 0.5;
+        vm.Vector2 p(double radScale, double t) =>
+            vm.Vector2(r * radScale, y0 + t * h);
+        final lathe = LatheGeometry.revolveArrays([
+          p(0.0, 0.0),
+          p(1.18, 0.0),
+          p(1.18, 0.08),
+          p(0.92, 0.12),
+          p(0.86, 0.46),
+          p(0.72, 0.48),
+          p(0.72, 0.53),
+          p(0.84, 0.55),
+          p(0.76, 0.90),
+          p(0.96, 0.94),
+          p(0.55, 1.0),
+          p(0.0, 1.0),
+        ], segments: s);
+        return VrSculptedArrays(
+          positions: lathe.positions,
+          normals: lathe.normals,
+          texCoords: lathe.texCoords,
+          tangents: lathe.tangents,
+          indices: lathe.indices,
+          colors: ao > 0.0
+              ? VrVertexAoBaker.bakeGroundAndCreaseColors(
+                  positions: lathe.positions,
+                  normals: lathe.normals,
+                  groundAoStrength: ao,
+                )
+              : null,
+        );
+      },
+    );
   }
 }
 

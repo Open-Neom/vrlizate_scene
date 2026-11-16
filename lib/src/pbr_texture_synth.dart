@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'vr_ktx2_texture.dart';
+
 /// Procedural, seamlessly tiling PBR texture sets — albedo, tangent-space
 /// normal and metallic-roughness — generated in pure Dart.
 ///
@@ -61,6 +63,11 @@ enum PbrSurface {
   /// Banded gas-giant atmosphere with latitudinal jet streams, Kelvin-Helmholtz
   /// shear eddies, and cyclonic storm ovals.
   gasGiantBands,
+
+  /// Multi-band architectural sci-fi trim sheet (ribbed kickplate, chamfered
+  /// hull bays, recessed vent louvers, diagonal hazard chevrons, and structural
+  /// beam flange) enabling modular worlds to share one batched material.
+  sciFiTrimSheet,
 }
 
 /// Everything a generator needs, in plain values so it crosses isolates.
@@ -73,8 +80,10 @@ class PbrTextureRequest {
     this.secondary = 0xFF606060,
     this.repeats = 1,
     this.reliefStrength = 1.0,
+    this.toksvigStrength = 0.55,
   }) : assert(size >= 8 && size <= 2048),
-       assert(repeats >= 1 && repeats <= 16);
+       assert(repeats >= 1 && repeats <= 16),
+       assert(toksvigStrength >= 0.0 && toksvigStrength <= 2.0);
 
   final PbrSurface surface;
 
@@ -97,6 +106,43 @@ class PbrTextureRequest {
 
   /// Multiplier on the normal-map slope; 1 is the authored relief.
   final double reliefStrength;
+
+  /// Sub-pixel Toksvig normal-variance-to-roughness regularization (`0` disables,
+  /// `0.55` default) eliminating binocular VR specular shimmer on sharp ridges.
+  final double toksvigStrength;
+}
+
+/// Isolate-friendly request for generating a coupled Toksvig mip pyramid and
+/// encoding all 3 PBR maps (`albedo`, `normal`, `orm`) into hardware-transcodable
+/// `KTX2` containers off the UI thread.
+final class PbrCompressedKtx2Request {
+  const PbrCompressedKtx2Request(
+    this.request, {
+    this.maxColorDimension,
+    this.maxNormalDimension,
+    this.maxOrmDimension,
+    this.mipToksvigStrength = 1.0,
+  });
+
+  final PbrTextureRequest request;
+  final int? maxColorDimension;
+  final int? maxNormalDimension;
+  final int? maxOrmDimension;
+  final double mipToksvigStrength;
+}
+
+/// Encoded KTX2 payloads (`4x4` block-compressed with pre-filtered Toksvig mips)
+/// returned by [PbrTextureSynth.generateCompressedKtx2].
+final class PbrCompressedKtx2Set {
+  const PbrCompressedKtx2Set({
+    required this.albedoKtx2,
+    required this.normalKtx2,
+    required this.ormKtx2,
+  });
+
+  final Uint8List albedoKtx2;
+  final Uint8List normalKtx2;
+  final Uint8List ormKtx2;
 }
 
 /// The generated maps of one request. Pixels are RGBA8, row-major, straight
@@ -157,12 +203,49 @@ abstract final class PbrTextureSynth {
         _carbonHex(field);
       case PbrSurface.gasGiantBands:
         _gasGiantBands(field);
+      case PbrSurface.sciFiTrimSheet:
+        _sciFiTrimSheet(field);
     }
+    final normal = field.normalBytes(request.reliefStrength);
+    final orm = request.toksvigStrength > 0.0
+        ? VrToksvigFilter.regularizeBaseOrmRoughness(
+            normalRgba: normal,
+            ormRgba: field.metallicRoughnessBytes(),
+            width: n,
+            height: n,
+            strength: request.toksvigStrength,
+          )
+        : field.metallicRoughnessBytes();
     return PbrTextureSet(
       size: n,
       albedo: field.albedoBytes(),
-      normal: field.normalBytes(request.reliefStrength),
-      metallicRoughness: field.metallicRoughnessBytes(),
+      normal: normal,
+      metallicRoughness: orm,
+    );
+  }
+
+  /// Generates [req.request], builds coupled linear-sRGB + multi-level Toksvig
+  /// mip chains (applying asymmetric resolution caps when set), and encodes
+  /// all three maps into `4x4` block-compressed `KTX2` containers.
+  static PbrCompressedKtx2Set generateCompressedKtx2(
+    PbrCompressedKtx2Request req,
+  ) {
+    final base = generate(req.request);
+    final chains = VrToksvigFilter.generateCoupledPbrMipChain(
+      albedoRgba: base.albedo,
+      normalRgba: base.normal,
+      ormRgba: base.metallicRoughness,
+      width: base.size,
+      height: base.size,
+      toksvigStrength: req.mipToksvigStrength,
+      maxColorDimension: req.maxColorDimension,
+      maxNormalDimension: req.maxNormalDimension,
+      maxOrmDimension: req.maxOrmDimension,
+    );
+    return PbrCompressedKtx2Set(
+      albedoKtx2: VrKtx2Codec.encodeMipChainToKtx2(chains.albedo, srgb: true),
+      normalKtx2: VrKtx2Codec.encodeMipChainToKtx2(chains.normal, srgb: false),
+      ormKtx2: VrKtx2Codec.encodeMipChainToKtx2(chains.orm, srgb: false),
     );
   }
 
@@ -686,6 +769,117 @@ abstract final class PbrTextureSynth {
       px.metallic = 0.0;
       px.roughness = 0.68 + 0.20 * (1.0 - mix);
       px.ao = 0.88 + 0.12 * mix;
+    });
+  }
+
+  static void _sciFiTrimSheet(_Field f) {
+    final r = f.request;
+    final hull = _Rgb.of(r.primary);
+    final accent = _Rgb.of(r.secondary);
+    f.each((u, v, px) {
+      final wear = f.fbm(u, v, octaves: 3, cells: 8 * r.repeats);
+      final brush = f.fbm(u * 2.0, v * 0.25, octaves: 2, cells: 48 * r.repeats);
+
+      // Horizontal seam grooves separating the 5 architectural trim bands
+      // (including top/bottom wrap at v=0 / v=1 so vertical tiling is seamless).
+      const cuts = <double>[0.0, 0.18, 0.48, 0.64, 0.78, 1.0];
+      var minCutDist = 1.0;
+      for (final c in cuts) {
+        final d = (v - c).abs();
+        if (d < minCutDist) minCutDist = d;
+      }
+      final seamBevel = _smoothstep(0.004, 0.014, minCutDist);
+
+      if (minCutDist < 0.004) {
+        px.height = 0.10;
+        px.albedo = hull.scaled(0.38);
+        px.metallic = 0.70;
+        px.roughness = 0.72;
+        px.ao = 0.46;
+        return;
+      }
+
+      if (v < 0.18) {
+        // Band 0: Ribbed kickplate / heavy floor trim.
+        final ribs = 16 * r.repeats;
+        final ru = (u * ribs) - (u * ribs).floor();
+        final ribShape = _smoothstep(0.14, 0.34, math.min(ru, 1.0 - ru));
+        px.height = (0.32 + 0.50 * ribShape) * seamBevel + 0.04 * brush;
+        px.albedo = hull.scaled((0.72 + 0.24 * ribShape) * (0.94 + 0.10 * wear));
+        px.metallic = 0.86;
+        px.roughness = 0.34 + 0.20 * (1.0 - ribShape) + 0.08 * wear;
+        px.ao = (0.56 + 0.44 * ribShape * seamBevel).clamp(0.48, 1.0);
+      } else if (v < 0.48) {
+        // Band 1: Modular chamfered bulkhead bays with corner fasteners.
+        final bays = 4 * r.repeats;
+        final bu = (u * bays) - (u * bays).floor();
+        final bv = (v - 0.18) / 0.30;
+        final edge = math.min(
+          math.min(bu, 1.0 - bu),
+          math.min(bv, 1.0 - bv),
+        );
+        final chamfer = _smoothstep(0.03, 0.11, edge);
+        var fastener = 0.0;
+        for (final fu in const <double>[0.10, 0.90]) {
+          for (final fv in const <double>[0.16, 0.84]) {
+            final d = math.sqrt((bu - fu) * (bu - fu) + (bv - fv) * (bv - fv));
+            if (d < 0.035) {
+              fastener = 1.0 - d / 0.035;
+            }
+          }
+        }
+        px.height =
+            (0.28 + 0.58 * chamfer - 0.24 * fastener) * seamBevel +
+            0.03 * brush;
+        px.albedo = hull.scaled(
+          (0.84 + 0.16 * chamfer - 0.18 * fastener) * (0.95 + 0.08 * wear),
+        );
+        px.metallic = 0.88;
+        px.roughness = 0.28 + 0.14 * brush + 0.18 * fastener;
+        px.ao = (0.62 + 0.38 * chamfer - 0.22 * fastener).clamp(0.50, 1.0);
+      } else if (v < 0.64) {
+        // Band 2: Recessed ventilation louvers.
+        final slats = 8 * r.repeats;
+        final su = (u * slats) - (u * slats).floor();
+        final lv = (v - 0.48) / 0.16;
+        final louver = 0.5 + 0.5 * math.sin(lv * 4.0 * 2.0 * math.pi);
+        final inFrame = su < 0.08 || su > 0.92;
+        if (inFrame) {
+          px.height = 0.76 * seamBevel;
+          px.albedo = hull.scaled(0.88);
+          px.metallic = 0.85;
+          px.roughness = 0.32 + 0.10 * wear;
+          px.ao = 0.88;
+        } else {
+          px.height = (0.16 + 0.46 * louver) * seamBevel;
+          px.albedo = _Rgb.lerp(accent.scaled(0.35), hull, louver * 0.75);
+          px.metallic = 0.78;
+          px.roughness = 0.42 + 0.24 * (1.0 - louver);
+          px.ao = (0.48 + 0.44 * louver).clamp(0.46, 1.0);
+        }
+      } else if (v < 0.78) {
+        // Band 3: Diagonal hazard chevron warning strip (dielectric painted coat).
+        final phase = (u * 12.0 * r.repeats + (v - 0.64) * 18.0) % 1.0;
+        final stripe = _smoothstep(0.46, 0.54, (phase - 0.5).abs() * 2.0);
+        px.height = (0.68 + 0.06 * stripe) * seamBevel + 0.02 * wear;
+        px.albedo = _Rgb.lerp(
+          accent,
+          hull.scaled(0.28),
+          stripe,
+        ).scaled(0.92 + 0.12 * wear);
+        px.metallic = 0.14;
+        px.roughness = 0.44 + 0.20 * wear;
+        px.ao = (0.82 + 0.18 * seamBevel).clamp(0.70, 1.0);
+      } else {
+        // Band 4: Brushed structural flange / crown beam.
+        final bv = (v - 0.78) / 0.22;
+        final ridge = 1.0 - (bv - 0.5).abs() * 1.4;
+        px.height = (0.52 + 0.34 * ridge.clamp(0.0, 1.0)) * seamBevel + 0.03 * brush;
+        px.albedo = _Rgb.lerp(hull, accent, 0.18).scaled(0.92 + 0.10 * brush);
+        px.metallic = 0.92;
+        px.roughness = 0.24 + 0.12 * brush + 0.08 * wear;
+        px.ao = (0.76 + 0.24 * seamBevel).clamp(0.66, 1.0);
+      }
     });
   }
 
