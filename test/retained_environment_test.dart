@@ -228,10 +228,11 @@ void main() {
       // The factory refused (shaders not ready): the same dome is retried.
       adapter.sync();
       expect(resources.skies.length, 2);
-      expect(resources.skies.last, dome);
+      expect(resources.skies.last, same(dome));
       resources.acceptSky = true;
       adapter.sync();
       expect(resources.skies.length, 3);
+      expect(resources.skies.last, same(dome));
       adapter.sync();
       expect(resources.skies.length, 3, reason: 'applied domes are retained');
 
@@ -241,6 +242,58 @@ void main() {
       adapter.sync();
       expect(resources.skies.last, isNull);
       adapter.dispose();
+    });
+
+    test('cached sky follows authored colors and default dome changes', () {
+      final source = core.Scene(backgroundColor: const ui.Color(0xFF243B5C));
+      final resources = EnvironmentRecorder();
+      final adapter = VrRetainedSceneAdapter(
+        source: source,
+        resources: resources,
+      )..defaultSkyDome = true;
+      addTearDown(adapter.dispose);
+
+      adapter.sync();
+      final first = resources.skies.single!;
+      expect(first.zenith, first.horizon * .45);
+      expect(first.ground, first.horizon * .3);
+      source.backgroundColor = const ui.Color(0xFF808080);
+      adapter.sync();
+      final changed = resources.skies.last!;
+      expect(resources.skies.length, 2);
+      expect(changed.horizon.x, greaterThan(first.horizon.x));
+      expect(changed.zenith, changed.horizon * .45);
+      expect(changed.ground, changed.horizon * .3);
+
+      source.skyZenithColor = const ui.Color(0xFF000000);
+      adapter.sync();
+      expect(resources.skies.length, 3);
+      expect(resources.skies.last!.zenith.length2, 0);
+      expect(resources.skies.last!.ground, changed.horizon);
+      // An authored dome takes precedence over the default-dome switch.
+      adapter.defaultSkyDome = false;
+      adapter.sync();
+      expect(resources.skies.length, 3);
+      source.skyGroundColor = const ui.Color(0xFFFFFFFF);
+      adapter.sync();
+      expect(resources.skies.length, 4);
+      expect(resources.skies.last!.ground, vm.Vector3.all(1));
+
+      source
+        ..skyZenithColor = null
+        ..skyGroundColor = null;
+      adapter.sync();
+      expect(resources.skies.length, 5);
+      expect(resources.skies.last, isNull);
+      adapter.defaultSkyDome = true;
+      adapter.sync();
+      expect(resources.skies.length, 6);
+      expect(resources.skies.last!.horizon, changed.horizon);
+      adapter.defaultSkyDome = false;
+      adapter.sync();
+      adapter.sync();
+      expect(resources.skies.length, 7);
+      expect(resources.skies.last, isNull);
     });
 
     test('a missing zenith or ground falls back to the horizon color', () {

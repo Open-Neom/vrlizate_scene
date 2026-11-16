@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_scene/scene.dart' show AntiAliasingMode;
 
@@ -106,12 +108,33 @@ class VrQualityPreset {
   ) => preset ?? forTier(detectTier(context));
 
   /// The next tier down, for dynamic frame-time-based downscaling.
-  VrQualityPreset get stepDown => switch (tier) {
-    VrQualityTier.ultra => high,
-    VrQualityTier.high => medium,
-    VrQualityTier.medium => low,
-    VrQualityTier.low => low,
-  };
+  /// Custom settings cap the pixel and shadow budgets at each step.
+  VrQualityPreset get stepDown {
+    final next = switch (tier) {
+      VrQualityTier.ultra => high,
+      VrQualityTier.high => medium,
+      VrQualityTier.medium => low,
+      VrQualityTier.low => this,
+    };
+    if (tier == VrQualityTier.low || identical(this, forTier(tier))) {
+      return next;
+    }
+
+    // AA techniques have different costs across backends. Keep the chosen
+    // technique until the lower tier disables AA entirely.
+    return VrQualityPreset(
+      tier: next.tier,
+      pixelRatioScale: math.min(pixelRatioScale, next.pixelRatioScale),
+      antiAliasing: next.antiAliasing == AntiAliasingMode.none
+          ? AntiAliasingMode.none
+          : antiAliasing,
+      shadowMapResolution: math.min(
+        shadowMapResolution,
+        next.shadowMapResolution,
+      ),
+      bloomEnabled: bloomEnabled && next.bloomEnabled,
+    );
+  }
 
   /// The next tier up, for dynamic resolution recovery when performance is stable.
   VrQualityPreset get stepUp => switch (tier) {

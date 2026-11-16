@@ -129,10 +129,42 @@ class VrLook {
     ambientOcclusion: true,
   );
 
+  /// Creates a simple opaque PBR material from already-linear RGB channels.
+  ///
+  /// Authored sRGB palettes must convert before calling this method. An omitted
+  /// [emission] preserves the renderer's default emissive factor; otherwise its
+  /// RGB channels are the supplied color multiplied by that strength.
+  static PhysicallyBasedMaterial material(
+    double r,
+    double g,
+    double b, {
+    double roughness = 0.8,
+    double metallic = 0,
+    double? emission,
+  }) {
+    final material = PhysicallyBasedMaterial()
+      ..baseColorFactor = vm.Vector4(r, g, b, 1)
+      ..roughnessFactor = roughness
+      ..metallicFactor = metallic
+      ..vertexColorWeight = 0;
+    if (emission != null) {
+      material.emissiveFactor = vm.Vector4(
+        r * emission,
+        g * emission,
+        b * emission,
+        0,
+      );
+    }
+    return material;
+  }
+
   /// Writes this look into a live [EnvironmentSettings] snapshot, scaled by
   /// [preset]. Pure and allocation-free — safe to call on tier changes.
   void applyTo(EnvironmentSettings s, VrQualityPreset preset) {
     s.toneMapping = toneMapping;
+    if (toneMapping == ToneMappingMode.agx) {
+      s.agxContrast = 1.26;
+    }
     s.exposure = exposure;
 
     final grading = saturation != 1.0 || contrast != 1.0;
@@ -147,6 +179,7 @@ class VrLook {
     if (bloom) {
       s.bloomIntensity = bloomIntensity;
       s.bloomThreshold = bloomThreshold;
+      s.bloomScatter = 0.72;
     }
 
     final vignette = vignetteIntensity > 0.0;
@@ -159,13 +192,31 @@ class VrLook {
       s.fogMode = FogMode.exponential;
       s.fogColor = fogColor!;
       s.fogDensity = Fog.visibilityDensity(fogVisibilityMeters);
+      s.fogSkyColorInfluence = 0.28;
+      s.fogSunInScatter = 0.22;
+    } else {
+      s.fogSkyColorInfluence = 0.0;
+      s.fogSunInScatter = 0.0;
     }
 
-    final ao = ambientOcclusion && preset.tier.index >= VrQualityTier.high.index;
+    final ao =
+        ambientOcclusion && preset.tier.index >= VrQualityTier.high.index;
     s.ambientOcclusionEnabled = ao;
     if (ao) {
-      s.ambientOcclusionIntensity = 0.6;
+      final ultra = preset.tier == VrQualityTier.ultra;
+      s.ambientOcclusionMethod = AmbientOcclusionMethod.groundTruth;
+      s.ambientOcclusionIntensity = 0.82;
+      s.ambientOcclusionRadius = 0.40;
+      s.ambientOcclusionMultiBounce = 0.65;
+      s.ambientOcclusionDirectLightAffect = 0.18;
       s.ambientOcclusionHalfResolution = true;
+      s.ambientOcclusionBentNormals = ultra;
+      s.ambientOcclusionSpecularMode = ultra
+          ? SpecularAmbientOcclusionMode.bentCone
+          : SpecularAmbientOcclusionMode.simple;
+    } else {
+      s.ambientOcclusionBentNormals = false;
+      s.ambientOcclusionSpecularMode = SpecularAmbientOcclusionMode.none;
     }
   }
 
@@ -176,4 +227,39 @@ class VrLook {
     applyTo(s, preset);
     scene.environmentSettings = s;
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is VrLook &&
+          other.toneMapping == toneMapping &&
+          other.exposure == exposure &&
+          other.saturation == saturation &&
+          other.contrast == contrast &&
+          other.bloomIntensity == bloomIntensity &&
+          other.bloomThreshold == bloomThreshold &&
+          other.vignetteIntensity == vignetteIntensity &&
+          other.fogColor == fogColor &&
+          other.fogVisibilityMeters == fogVisibilityMeters &&
+          other.ambientOcclusion == ambientOcclusion &&
+          other.barrelDistortionK1 == barrelDistortionK1 &&
+          other.barrelDistortionK2 == barrelDistortionK2 &&
+          other.chromaticAberrationOffset == chromaticAberrationOffset;
+
+  @override
+  int get hashCode => Object.hash(
+    toneMapping,
+    exposure,
+    saturation,
+    contrast,
+    bloomIntensity,
+    bloomThreshold,
+    vignetteIntensity,
+    fogColor,
+    fogVisibilityMeters,
+    ambientOcclusion,
+    barrelDistortionK1,
+    barrelDistortionK2,
+    chromaticAberrationOffset,
+  );
 }

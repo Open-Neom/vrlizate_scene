@@ -101,7 +101,7 @@ class PbrTextureSet {
   /// Tangent-space normal, OpenGL convention, `n * 0.5 + 0.5`.
   final Uint8List normal;
 
-  /// glTF layout: R unused (255), G roughness, B metallic, A 255.
+  /// glTF ORM layout: R ambient occlusion, G roughness, B metallic, A 255.
   final Uint8List metallicRoughness;
 }
 
@@ -172,10 +172,12 @@ abstract final class PbrTextureSynth {
         px.height = 0.15 + 0.10 * surface;
         px.albedo = mortar.scaled(0.9 + 0.2 * surface);
         px.roughness = 0.95;
+        px.ao = 0.56 + 0.12 * surface;
       } else {
         px.height = 0.15 + 0.85 * bevel - 0.08 * surface + 0.03 * grain;
         px.albedo = brick.scaled(tint * (0.94 + 0.12 * grain));
         px.roughness = 0.82 + 0.12 * surface;
+        px.ao = 0.72 + 0.28 * bevel - 0.04 * (1 - grain);
       }
     });
   }
@@ -223,10 +225,12 @@ abstract final class PbrTextureSynth {
         px.height = 0.05 + 0.08 * surface;
         px.albedo = joint.scaled(0.85 + 0.3 * surface);
         px.roughness = 0.95;
+        px.ao = 0.52 + 0.14 * surface;
       } else {
         px.height = 0.05 + 0.9 * chamfer + 0.12 * (surface - 0.5);
         px.albedo = stone.scaled(tint * (0.9 + 0.2 * surface));
         px.roughness = 0.62 + 0.25 * surface;
+        px.ao = 0.74 + 0.26 * chamfer;
       }
     });
   }
@@ -253,10 +257,17 @@ abstract final class PbrTextureSynth {
         px.height = 0.0;
         px.albedo = dark.scaled(0.6);
         px.roughness = 0.9;
+        px.ao = 0.48;
       } else {
+        final edgeRelief = _smoothstep(
+          gap / 2,
+          gap * 2.2,
+          math.min(pu, 1 - pu),
+        );
         px.height = 0.7 + 0.12 * (1 - rings) + 0.05 * fibre;
         px.albedo = _Rgb.lerp(wood, dark, ringMix * 0.7).scaled(tint);
         px.roughness = 0.55 + 0.2 * rings;
+        px.ao = (0.84 + 0.16 * edgeRelief - 0.05 * rings).clamp(0.65, 1.0);
       }
     });
   }
@@ -297,12 +308,15 @@ abstract final class PbrTextureSynth {
         px.albedo = seamColor;
         px.roughness = 0.75;
         px.metallic = 1.0;
+        px.ao = 0.54;
       } else {
+        final seamRelief = _smoothstep(seam / 2, seam * 2.4, math.min(du, dv));
         px.height =
             0.6 + 0.35 * rivet + 0.03 * (wear - 0.5) - 0.02 * scratchMask;
         px.albedo = metal.scaled(tint * (0.95 + 0.1 * wear));
         px.roughness = 0.32 + 0.25 * wear + 0.3 * scratchMask;
         px.metallic = 1.0;
+        px.ao = (0.86 + 0.14 * seamRelief - 0.06 * scratchMask).clamp(0.6, 1.0);
       }
     });
   }
@@ -327,6 +341,7 @@ abstract final class PbrTextureSynth {
       );
       px.height = 0.5 + 0.02 * fine - 0.03 * veins;
       px.roughness = 0.18 + 0.12 * veins + 0.05 * fine;
+      px.ao = 1.0 - 0.10 * veins;
     });
   }
 
@@ -342,6 +357,7 @@ abstract final class PbrTextureSynth {
       px.height = 0.3 + 0.3 * mounds + 0.25 * clumps + 0.15 * blades;
       px.albedo = _Rgb.lerp(green, dry, dryness).scaled(0.85 + 0.3 * blades);
       px.roughness = 0.9 + 0.1 * blades;
+      px.ao = (0.62 + 0.22 * mounds + 0.16 * blades).clamp(0.55, 1.0);
     });
   }
 
@@ -373,6 +389,7 @@ abstract final class PbrTextureSynth {
       px.height = (h * 0.8 + 0.1 * grit).clamp(0.0, 1.0);
       px.albedo = _Rgb.lerp(dark, light, px.height).scaled(0.9 + 0.2 * grit);
       px.roughness = 0.85 + 0.15 * grit;
+      px.ao = (0.58 + 0.42 * px.height).clamp(0.52, 1.0);
     });
   }
 
@@ -394,6 +411,7 @@ abstract final class PbrTextureSynth {
         0.6 + 0.4 * thread,
       ).scaled(0.9 + 0.2 * fuzz);
       px.roughness = 0.95;
+      px.ao = (0.68 + 0.32 * thread).clamp(0.62, 1.0);
     });
   }
 
@@ -412,6 +430,7 @@ abstract final class PbrTextureSynth {
         staining * 0.5,
       ).scaled(0.95 + 0.08 * fine);
       px.roughness = 0.85 + 0.1 * fine;
+      px.ao = (0.93 + 0.07 * fine).clamp(0.88, 1.0);
     });
   }
 
@@ -432,6 +451,7 @@ abstract final class PbrTextureSynth {
         0.55 + 0.45 * ripples,
       ).scaled(0.95 + 0.1 * grains);
       px.roughness = 0.92 + 0.08 * grains;
+      px.ao = (0.78 + 0.22 * ripples).clamp(0.74, 1.0);
     });
   }
 
@@ -447,6 +467,7 @@ class _Texel {
   _Rgb albedo = const _Rgb(0.5, 0.5, 0.5);
   double roughness = 0.8;
   double metallic = 0.0;
+  double ao = 1.0;
 }
 
 /// The working buffers of one texture set plus periodic noise helpers.
@@ -472,7 +493,8 @@ class _Field {
           ..height = 0.5
           ..albedo = const _Rgb(0.5, 0.5, 0.5)
           ..roughness = 0.8
-          ..metallic = 0.0;
+          ..metallic = 0.0
+          ..ao = 1.0;
         author(u, v, px);
         final i = y * size + x;
         _height[i] = px.height.clamp(0.0, 1.0);
@@ -481,7 +503,7 @@ class _Field {
         _albedo[o + 1] = _byte(px.albedo.g);
         _albedo[o + 2] = _byte(px.albedo.b);
         _albedo[o + 3] = 255;
-        _rough[o] = 255;
+        _rough[o] = _byte(px.ao);
         _rough[o + 1] = _byte(px.roughness);
         _rough[o + 2] = _byte(px.metallic);
         _rough[o + 3] = 255;

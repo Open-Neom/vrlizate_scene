@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.0.0 - 2026-10-20
+## 1.0.0 - 2026-11-06
+
+- Require `vrlizate ^1.13.0` for procedural curves, edge-turn input and renderer
+  sessions; the previous `^1.12.0` lower bound admitted an incompatible engine.
+- Harden `VrPhysicalGuardianService` (filter obstacle confidence `< 0.30`, separate manual passthrough blend from temporary Guardian proximity floor, and respect `VrPassthroughMode.off`) and bound voxel/contour retention in `VrSyntheticLidarScanner` and `VrMultiCameraSpaceMapper` (`A06`, `A10`).
 
 - Promote `vrlizate_scene` to stable `1.0.0` aligned with the Open Neom modular architecture (`lib/utils/constants/`, `lib/utils/enums/`, `lib/domain/models/`, `lib/domain/services/`, `lib/ui/`).
 - Hide center gaze dwell reticle (`_ReticlePainter`) when a remote phone controller or gamepad suppresses gaze dwell (`isGazeSuppressed`), while keeping 3D laser pointer aiming reticles active.

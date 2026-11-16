@@ -4,6 +4,7 @@ import 'package:flutter_scene/scene.dart' as fs;
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate_avatar/vrlizate_avatar.dart';
 
+import '../vr_mesh_tangents.dart';
 import 'vr_avatar_geometry.dart';
 import 'vr_avatar_motion_frame.dart';
 import 'vr_avatar_plan.dart';
@@ -350,6 +351,12 @@ class _AvatarGeometryCache {
           positions: data.positions,
           normals: data.normals,
           texCoords: data.texCoords,
+          tangents: VrMeshTangents.compute(
+            positions: data.positions,
+            normals: data.normals,
+            texCoords: data.texCoords,
+            indices: data.indices,
+          ),
           indices: data.indices,
           retainCpuData: false,
         );

@@ -22,7 +22,7 @@ void main() {
 
     final ray = vm.Ray.originDirection(
       vm.Vector3.zero(),
-      vm.Vector3(0.17, -0.22, -0.46).normalized(),
+      vm.Vector3(0.17, -0.22, -0.56).normalized(),
     );
     expect(root.children, hasLength(14));
     final pickCandidates = <Node>[];
@@ -56,7 +56,7 @@ void main() {
     final orientation = vm.Quaternion.axisAngle(vm.Vector3(0, 1, 0), pi / 2);
 
     hands.update(eye, orientation, 0);
-    final expectedPalm = orientation.rotated(vm.Vector3(0.17, -0.22, -0.46))
+    final expectedPalm = orientation.rotated(vm.Vector3(0.17, -0.22, -0.56))
       ..add(eye);
     expect(nodes.first.position.distanceTo(expectedPalm), lessThan(1e-6));
 

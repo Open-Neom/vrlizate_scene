@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'vr_mesh_tangents.dart';
+
 /// Surfaces of revolution from a 2-D profile: chess pieces, goblets,
 /// columns, bottles — turned on the Y axis without any asset.
 abstract final class LatheGeometry {
@@ -20,6 +22,7 @@ abstract final class LatheGeometry {
       positions: arrays.positions,
       normals: arrays.normals,
       texCoords: arrays.texCoords,
+      tangents: arrays.tangents,
       indices: arrays.indices,
     );
   }
@@ -110,6 +113,12 @@ abstract final class LatheGeometry {
       positions: positions,
       normals: normals,
       texCoords: uvs,
+      tangents: VrMeshTangents.compute(
+        positions: positions,
+        normals: normals,
+        texCoords: uvs,
+        indices: indices,
+      ),
       indices: indices,
     );
   }
@@ -223,18 +232,20 @@ abstract final class LatheGeometry {
   }
 }
 
-/// Vertex arrays of a lathe: 3 floats per position/normal, 2 per UV.
+/// Vertex arrays of a lathe: 3 floats per position/normal, 2 per UV, 4 per tangent.
 class LatheArrays {
   const LatheArrays({
     required this.positions,
     required this.normals,
     required this.texCoords,
+    required this.tangents,
     required this.indices,
   });
 
   final Float32List positions;
   final Float32List normals;
   final Float32List texCoords;
+  final Float32List tangents;
   final List<int> indices;
 }
 

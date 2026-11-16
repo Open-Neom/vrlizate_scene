@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -25,14 +27,25 @@ class _TimingBinding extends AutomatedTestWidgetsFlutterBinding {
   }
 }
 
-FrameTiming _timing({int build = 1000, int raster = 40000}) => FrameTiming(
-  vsyncStart: 0,
-  buildStart: 10,
-  buildFinish: 10 + build,
-  rasterStart: 11 + build,
-  rasterFinish: 11 + build + raster,
-  rasterFinishWallTime: 11 + build + raster,
-);
+FrameTiming _timing({
+  int build = 1000,
+  int raster = 40000,
+  int rasterWait = 1,
+  int? finish,
+}) {
+  final rasterFinish = finish ?? 10 + build + rasterWait + raster;
+  final rasterStart = rasterFinish - raster;
+  final buildFinish = rasterStart - rasterWait;
+  final buildStart = buildFinish - build;
+  return FrameTiming(
+    vsyncStart: buildStart - 10,
+    buildStart: buildStart,
+    buildFinish: buildFinish,
+    rasterStart: rasterStart,
+    rasterFinish: rasterFinish,
+    rasterFinishWallTime: rasterFinish,
+  );
+}
 
 bool _record(
   VrFrameQualityPolicy policy, {
@@ -180,6 +193,164 @@ void main() {
     expect(pressure, 1);
     binding.report([_timing()]);
     expect(pressure, 2);
+  });
+
+  testWidgets('severe readings reduce at most once per poll', (tester) async {
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    var status = 3;
+    var reads = 0;
+    var pressure = 0;
+    late final VrFrameQualityMonitor monitor;
+    monitor = VrFrameQualityMonitor(
+      policy: VrFrameQualityPolicy(),
+      binding: binding,
+      clockMicroseconds: () => binding.clock.now().microsecondsSinceEpoch,
+      readThermalStatus: () async {
+        reads++;
+        return status;
+      },
+      onPressure: () {
+        pressure++;
+        // Applying a new tier invalidates evidence in StereoSceneView.
+        monitor.resetThermalEvidence();
+      },
+    );
+    addTearDown(monitor.dispose);
+    monitor.setActive(true);
+    await tester.pump(Duration.zero);
+    expect(reads, 1);
+    expect(pressure, 1);
+
+    monitor.setActive(false);
+    monitor.setActive(true);
+    await tester.pump(const Duration(seconds: 9));
+    expect(reads, 1);
+    await tester.pump(const Duration(seconds: 1));
+    expect(reads, 2);
+    expect(pressure, 2);
+
+    status = 7;
+    await tester.pump(const Duration(seconds: 10));
+    expect(reads, 3);
+    expect(pressure, 2, reason: 'Out-of-range status is unavailable');
+
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump(const Duration(seconds: 20));
+    expect(reads, 3);
+    monitor.dispose();
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+  });
+
+  testWidgets('obsolete reads cannot affect a replacement source', (
+    tester,
+  ) async {
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    final oldReading = Completer<int?>();
+    var reads = 0;
+    var pressure = 0;
+    final monitor = VrFrameQualityMonitor(
+      policy: VrFrameQualityPolicy(),
+      binding: binding,
+      clockMicroseconds: () => binding.clock.now().microsecondsSinceEpoch,
+      readThermalStatus: () => oldReading.future,
+      onPressure: () => pressure++,
+    )..setActive(true);
+    addTearDown(monitor.dispose);
+    await tester.pump(Duration.zero);
+
+    monitor.setActive(false);
+    monitor.setThermalStatusReader(() async {
+      reads++;
+      return 3;
+    });
+    monitor.setActive(true);
+    await tester.pump(const Duration(seconds: 20));
+    expect(reads, 0, reason: 'The prior read still owns its slot');
+    oldReading.complete(3);
+    await tester.pump();
+    await tester.pump(Duration.zero);
+    expect(reads, 1);
+    expect(pressure, 1, reason: 'Only the replacement read may reduce quality');
+    monitor.dispose();
+  });
+
+  testWidgets('recovery needs fresh cool polls and current 120 Hz headroom', (
+    tester,
+  ) async {
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    int? status = 0;
+    var recoveries = 0;
+    int clock() => binding.clock.now().microsecondsSinceEpoch;
+    void reportFrames({int raster = 5000, int rasterWait = 1}) {
+      final now = clock();
+      binding.report([
+        _timing(
+          build: 5000,
+          raster: raster,
+          rasterWait: rasterWait,
+          finish: now - 12000,
+        ),
+        _timing(raster: raster, rasterWait: rasterWait, finish: now),
+      ]);
+    }
+
+    final monitor = VrFrameQualityMonitor(
+      policy: VrFrameQualityPolicy(targetRefreshRateHz: 120, windowFrames: 2),
+      binding: binding,
+      clockMicroseconds: clock,
+      readThermalStatus: () async => status,
+      onPressure: () => fail('The workload stays below the frame budget'),
+      onRecovery: () => recoveries++,
+    )..setActive(true);
+    addTearDown(monitor.dispose);
+    await tester.pump(Duration.zero); // cool at t=0
+
+    await tester.pump(const Duration(seconds: 10));
+    status = null;
+    await tester.pump(const Duration(seconds: 10)); // unknown at t=20
+    status = 0;
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(seconds: 10)); // cool at t=30–50
+    }
+    // A frame that would have ample 60 Hz headroom is too close to the 120 Hz
+    // budget. Build and raster are assessed independently for recovery too.
+    await tester.pump(const Duration(seconds: 9));
+    reportFrames(raster: 7000);
+    await tester.pump(const Duration(seconds: 1));
+    expect(recoveries, 0);
+
+    reportFrames();
+    await tester.pump(const Duration(seconds: 10));
+    expect(recoveries, 0, reason: 'The healthy workload is stale');
+
+    await tester.pump(const Duration(seconds: 9));
+    reportFrames();
+    await tester.pump(const Duration(seconds: 1));
+    expect(recoveries, 1);
+
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(seconds: 9));
+      reportFrames();
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(recoveries, 1, reason: 'A new tier needs its own cool interval');
+
+    await tester.pump(const Duration(seconds: 9));
+    // These frames finished recently but began before t=80, when the prior
+    // tier was active. Their individual stages have ample margin.
+    reportFrames(rasterWait: const Duration(seconds: 40).inMicroseconds);
+    await tester.pump(const Duration(seconds: 1));
+    expect(
+      recoveries,
+      1,
+      reason: 'Frames begun before recovery cannot qualify',
+    );
+
+    await tester.pump(const Duration(seconds: 9));
+    reportFrames();
+    await tester.pump(const Duration(seconds: 1));
+    expect(recoveries, 2);
+    monitor.dispose();
   });
 
   testWidgets(

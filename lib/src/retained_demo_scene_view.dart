@@ -9,6 +9,7 @@ import 'retained_scene_adapter.dart';
 import 'stereo_head_rig.dart';
 import 'stereo_scene_view.dart';
 import 'vr_input_session_scope.dart';
+import 'vr_look.dart';
 
 /// Runs existing game rules against a retained GPU scene, never a screenshot
 /// of the legacy renderer. StereoSceneView exclusively owns tracking and time.
@@ -102,6 +103,15 @@ class _RetainedDemoSceneViewState extends State<RetainedDemoSceneView>
       child: StereoSceneView(
         scene: _adapter.scene,
         rig: _rig,
+        look: const VrLook(
+          exposure: 1.03,
+          saturation: 1.05,
+          contrast: 1.06,
+          bloomIntensity: 0.24,
+          bloomThreshold: 0.92,
+          vignetteIntensity: 0.16,
+          ambientOcclusion: true,
+        ),
         enableHandTracking: false,
         // Source game rules own their dwell/selection, while the GPU view owns
         // system HOME and publishes the same ray before input dispatch.

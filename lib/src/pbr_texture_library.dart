@@ -47,7 +47,7 @@ abstract final class PbrTextureLibrary {
           request,
           debugLabel: 'pbr:${request.surface.name}',
         );
-        const sampling = TextureSampling(maxAnisotropy: 4);
+        const sampling = TextureSampling(maxAnisotropy: 8);
         return _Uploaded(
           albedo: Texture2D.fromPixels(
             pixels.albedo,
@@ -70,6 +70,7 @@ abstract final class PbrTextureLibrary {
             content: TextureContent.data,
             sampling: sampling,
           ),
+          hasPackedOcclusion: true,
         );
       });
 
@@ -134,6 +135,14 @@ abstract final class PbrTextureLibrary {
       ..roughnessFactor = roughnessFactor
       ..metallicFactor = metallicFactor
       ..baseColorFactor = tint ?? vm.Vector4(1, 1, 1, 1);
+    if (set.hasPackedOcclusion) {
+      material
+        ..occlusionTexture = set.metallicRoughness
+        ..occlusionTextureTransform = TextureTransform(scale: scale.clone())
+        ..occlusionStrength = 0.75;
+    } else {
+      material.occlusionTexture = null;
+    }
   }
 
   /// Applies one request to several materials that share it (e.g. every
@@ -176,11 +185,12 @@ abstract final class PbrTextureLibrary {
     double normalScale = 1.0,
     double roughnessFactor = 1.0,
     double metallicFactor = 0.0,
+    TextureSampling sampling = const TextureSampling(maxAnisotropy: 8),
   }) async {
     await Scene.initializeStaticResources();
     if (!isCurrent() || !Scene.isReadyToRender) return false;
-    final uploaded = await _loadAsset(set);
-    if (!isCurrent()) return false;
+    final uploaded = await _loadAsset(set, sampling, isCurrent);
+    if (uploaded == null || !isCurrent()) return false;
     _dress(
       material,
       uploaded,
@@ -193,36 +203,102 @@ abstract final class PbrTextureLibrary {
     return true;
   }
 
-  /// Photo sets share complete map identities, with bounded LRU retention.
-  static final _assets =
-      VrAsyncResourceCache<(String, String, String), _Uploaded>(
-        maxEntries: _cacheLimit,
-      );
+  /// Applies only the three photo maps and explicitly supplied factors.
+  ///
+  /// Unlike [applyAsset], this preserves existing UV transforms, occlusion and
+  /// unspecified factors. Useful for an authored material whose tiling and
+  /// metalness are already configured. Every decode is followed by [isCurrent]
+  /// before the next map is requested; the material changes only after all
+  /// three maps are ready and the caller is still current.
+  static Future<bool> applyAssetMaps(
+    PhysicallyBasedMaterial material,
+    PbrAssetSet set, {
+    required bool Function() isCurrent,
+    TextureSampling sampling = const TextureSampling(maxAnisotropy: 8),
+    vm.Vector4? tint,
+    double? normalScale,
+    double? roughnessFactor,
+    double? metallicFactor,
+  }) async {
+    await Scene.initializeStaticResources();
+    if (!isCurrent() || !Scene.isReadyToRender) return false;
+    final uploaded = await _loadAsset(set, sampling, isCurrent);
+    if (uploaded == null || !isCurrent()) return false;
+    material
+      ..baseColorTexture = uploaded.albedo
+      ..normalTexture = uploaded.normal
+      ..metallicRoughnessTexture = uploaded.metallicRoughness;
+    if (tint != null) material.baseColorFactor = tint;
+    if (normalScale != null) material.normalScale = normalScale;
+    if (roughnessFactor != null) material.roughnessFactor = roughnessFactor;
+    if (metallicFactor != null) material.metallicFactor = metallicFactor;
+    return true;
+  }
 
-  static Future<_Uploaded> _loadAsset(PbrAssetSet set) =>
-      _assets.load(set.resourceKey, () async {
-        const sampling = TextureSampling(maxAnisotropy: 4);
-        final color = await Texture2D.fromAsset(
-          set.colorAsset,
-          content: TextureContent.color,
-          sampling: sampling,
-        );
-        final normal = await Texture2D.fromAsset(
-          set.normalAsset,
-          content: TextureContent.normal,
-          sampling: sampling,
-        );
-        final roughness = await Texture2D.fromAsset(
-          set.roughnessAsset,
-          content: TextureContent.data,
-          sampling: sampling,
-        );
-        return _Uploaded(
-          albedo: color,
-          normal: normal,
-          metallicRoughness: roughness,
-        );
-      });
+  /// Three maps per photo set, bounded independently of live materials. A route
+  /// leaving cannot cancel a shared upload needed by another current route.
+  static final _assetMaps = VrAsyncResourceCache<Object, Texture2D>(
+    maxEntries: _cacheLimit * 3,
+  );
+
+  /// [TextureSampling] has identity equality, so key its complete value here.
+  @visibleForTesting
+  static Object assetMapCacheKey(
+    String asset,
+    TextureContent content,
+    TextureSampling sampling,
+  ) => (
+    asset,
+    content,
+    sampling.mipmaps,
+    sampling.maxMipmapLevels,
+    sampling.minFilter,
+    sampling.magFilter,
+    sampling.mipFilter,
+    sampling.maxAnisotropy,
+    sampling.addressMode,
+  );
+
+  static Future<Texture2D> _loadAssetMap(
+    String asset,
+    TextureContent content,
+    TextureSampling sampling,
+  ) => _assetMaps.load(
+    assetMapCacheKey(asset, content, sampling),
+    () => Texture2D.fromAsset(asset, content: content, sampling: sampling),
+  );
+
+  static Future<_Uploaded?> _loadAsset(
+    PbrAssetSet set,
+    TextureSampling sampling,
+    bool Function() isCurrent,
+  ) async {
+    if (!isCurrent()) return null;
+    final color = await _loadAssetMap(
+      set.colorAsset,
+      TextureContent.color,
+      sampling,
+    );
+    if (!isCurrent()) return null;
+    final normal = await _loadAssetMap(
+      set.normalAsset,
+      TextureContent.normal,
+      sampling,
+    );
+    if (!isCurrent()) return null;
+    final roughness = await _loadAssetMap(
+      set.roughnessAsset,
+      TextureContent.data,
+      sampling,
+    );
+    if (!isCurrent()) return null;
+    return _Uploaded(
+      albedo: color,
+      normal: normal,
+      metallicRoughness: roughness,
+      hasPackedOcclusion: false,
+    );
+  }
 
   /// [applyAsset] for several materials sharing one photo set.
   static Future<void> applyAssetAll(
@@ -234,6 +310,7 @@ abstract final class PbrTextureLibrary {
     double normalScale = 1.0,
     double roughnessFactor = 1.0,
     double metallicFactor = 0.0,
+    TextureSampling sampling = const TextureSampling(maxAnisotropy: 8),
   }) async {
     for (final material in materials) {
       final ok = await applyAsset(
@@ -245,6 +322,7 @@ abstract final class PbrTextureLibrary {
         normalScale: normalScale,
         roughnessFactor: roughnessFactor,
         metallicFactor: metallicFactor,
+        sampling: sampling,
       );
       if (!ok) return;
     }
@@ -254,7 +332,7 @@ abstract final class PbrTextureLibrary {
   @visibleForTesting
   static void clearCache() {
     _uploaded.clear();
-    _assets.clear();
+    _assetMaps.clear();
   }
 
   @visibleForTesting
@@ -266,11 +344,13 @@ class _Uploaded {
     required this.albedo,
     required this.normal,
     required this.metallicRoughness,
+    required this.hasPackedOcclusion,
   });
 
   final Texture2D albedo;
   final Texture2D normal;
   final Texture2D metallicRoughness;
+  final bool hasPackedOcclusion;
 }
 
 /// Asset paths of one photo-scanned PBR set (ambientCG `*_Color`,

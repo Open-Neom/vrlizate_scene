@@ -93,6 +93,7 @@ abstract interface class VrSceneRigSpatialBridge {
     required double rigPitch,
     required double dtSeconds,
     required bool nativeVioTracking,
+    double rigBodyYaw = 0.0,
   });
 }
 

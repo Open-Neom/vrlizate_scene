@@ -38,6 +38,7 @@ import 'vr_scene_input_controller.dart';
 import 'vr_scene_home_control_lifecycle.dart';
 import 'vr_stereo_scene_layers.dart';
 import 'vr_lens_warp_post_process.dart';
+import 'vr_sgsr_upscale_post_process.dart';
 import 'vr_predictive_motion_culler.dart';
 import 'vr_scene_pointer_interaction.dart';
 import 'vr_viewer_profile.dart';
@@ -82,8 +83,11 @@ class StereoSceneView extends StatefulWidget {
     this.showControllerFeedback = true,
     this.quality,
     this.fixedFoveation,
+    this.sgsrUpscale,
     this.dynamicScaling = true,
     this.targetRefreshRateHz,
+    this.readThermalStatus,
+    this.qualityContext,
     this.onQualityChanged,
     this.onTick,
     this.look,
@@ -232,6 +236,14 @@ class StereoSceneView extends StatefulWidget {
   /// See [VrFixedFoveation] for restrictions on screen-space effects.
   final VrFixedFoveation? fixedFoveation;
 
+  /// Optional single-pass Qualcomm SGSR 1 (`BSD-3-Clause`) spatial upscaler.
+  ///
+  /// When active and supported by the Impeller shader backend, renders the 3D
+  /// scene at `sgsrUpscale.internalRenderScale` (e.g. `0.75x`, cutting ~`43.8%`
+  /// of shaded 3D fragments) and reconstructs edges to native DPR while keeping
+  /// gaze reticles and controller overlays at crisp `1.0x` native resolution.
+  final VrSgsrUpscaleConfig? sgsrUpscale;
+
   /// When true, sustained build/raster overruns reduce quality one tier.
   /// Monitoring pauses with the app lifecycle, disabled TickerMode, or a
   /// covering route (including non-opaque dialogs).
@@ -243,8 +255,17 @@ class StereoSceneView extends StatefulWidget {
   /// This does not change the display mode or request an OS refresh rate.
   final double? targetRefreshRateHz;
 
-  /// Called whenever the effective quality tier changes (auto-detection or
-  /// dynamic downscaling).
+  /// Optional fresh thermal severity reader using the Android 0–6 scale.
+  /// Return null when no current reading is available. With adaptive quality
+  /// enabled, thermal pressure can reduce quality, and cooling plus sustained
+  /// frame headroom can restore it up to the requested preset.
+  final Future<int?> Function()? readThermalStatus;
+
+  /// Change this value when replacing content within a retained [scene].
+  /// The new workload starts with fresh frame and thermal evidence.
+  final Object? qualityContext;
+
+  /// Called when the effective preset changes or is applied to a new scene.
   final void Function(VrQualityPreset preset)? onQualityChanged;
 
   /// Extra per-frame hook (elapsed, deltaSeconds).
@@ -315,6 +336,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   VrSpatialTrackingController? _spatial;
   VrSpatialTrackingScope? _spatialScope;
   VrSceneRigSpatialBridge? _spatialBridge;
+  final _spatialEyeCenter = vm.Vector3.zero();
   VrSceneHandPoseBridge? _handBridge;
   bool _beaconHandPointingWasActive = false;
   bool _beaconHandPinchWasDown = false;
@@ -331,12 +353,19 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   final Map<String, Node> _nodesByName = {};
   final _gazeLifecycle = VrSceneGazeLifecycle();
+  bool _sgsrShaderReady = false;
+
+  void _onSgsrShaderReadyChanged(bool ready) {
+    if (_sgsrShaderReady == ready || !mounted) return;
+    setState(() => _sgsrShaderReady = ready);
+  }
   final ValueNotifier<double> _dwellProgress = ValueNotifier(0);
   final ValueNotifier<double> _zenithProgress = ValueNotifier(0);
   final VrZenithRecenterDetector _zenith = VrZenithRecenterDetector();
 
   InertialTapDetector? _tapDetector;
   VrQualityPreset? _preset;
+  VrQualityPreset? _requestedPreset;
   VrWorldNavigationScope? _worldNavigation;
   bool get _systemGazeEnabled =>
       view.showHomeControl && _worldNavigation != null;
@@ -366,6 +395,11 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   final vm.Vector3 _pointerPosition = vm.Vector3.zero();
   double _pointerDistance = 1.8;
   final VrScenePointerResolver _pointerResolver = VrScenePointerResolver();
+  final vm.Vector3 _lastGeometryRayOrigin = vm.Vector3.zero();
+  final vm.Vector3 _lastGeometryRayDir = vm.Vector3(0, 0, -1);
+  SceneRaycastHit? _cachedGeometryHit;
+  bool _hasGeometryRayCache = false;
+  int _geometryPickAgeFrames = 0;
   final VrSceneViewerProfileBinding _profileBinding =
       VrSceneViewerProfileBinding();
   VrViewerProfile? _viewerProfile;
@@ -383,6 +417,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   late final _qualityMonitor = VrFrameQualityMonitor(
     policy: _qualityPolicy,
     onPressure: _reduceQuality,
+    onRecovery: _recoverQuality,
   );
   late final vm.Vector3? Function() _readPointerPosition = () =>
       _input.pointerActive ? _pointerPosition : null;
@@ -393,6 +428,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   void _applyPreset(VrQualityPreset preset) {
     _preset = preset;
     _qualityPolicy.reset();
+    _qualityMonitor.resetThermalEvidence();
     view.scene.antiAliasingMode = preset.antiAliasing;
     view.scene.postProcess.bloom.enabled = preset.bloomEnabled;
     view.look?.applyToScene(view.scene, preset);
@@ -580,17 +616,22 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   void didUpdateWidget(covariant _ReadyStereoSceneView oldWidget) {
     super.didUpdateWidget(oldWidget);
     final previous = oldWidget.configuration;
+    final sceneChanged = !identical(previous.scene, view.scene);
+    if (sceneChanged || previous.qualityContext != view.qualityContext) {
+      _qualityPolicy.reset();
+      _qualityMonitor.resetThermalEvidence();
+    }
     if (previous.enableTempleTap != view.enableTempleTap ||
         previous.templeDoubleTapToRecenter != view.templeDoubleTapToRecenter) {
       _syncTempleTapDetector();
     }
-    if (previous.showHomeControl != view.showHomeControl ||
-        !identical(previous.scene, view.scene)) {
+    if (previous.showHomeControl != view.showHomeControl || sceneChanged) {
       _worldHomeLifecycle.setEnabled(view.showHomeControl);
       _removeWorldHome();
     }
-    if (!identical(previous.scene, view.scene)) {
-      _qualityPolicy.reset();
+    if (sceneChanged) {
+      _hasGeometryRayCache = false;
+      _cachedGeometryHit = null;
       _handRig?.dispose();
       _handRig = (view.enableHandTracking || _handBridge != null)
           ? SimulatedHandVisuals(
@@ -618,8 +659,15 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     if (view.arbiter != previous.arbiter) {
       _updateActiveArbiter();
     }
-    if (view.quality != previous.quality && view.quality != null) {
-      _applyPreset(view.quality!);
+    if (view.quality != previous.quality) {
+      final requested = VrDevicePerformanceScope.initialPresetOf(
+        context,
+        explicitQuality: view.quality,
+      );
+      _requestedPreset = requested;
+      _applyPreset(requested);
+    } else if (sceneChanged && _preset != null) {
+      _applyPreset(_preset!);
     }
     if (view.ipd != previous.ipd && view.ipd != null) {
       _rig.ipd = view.ipd!;
@@ -794,9 +842,16 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     final spatialBridge = _spatialBridge;
     if (spatialBridge != null) {
       final nativeVioActive = _spatial?.isTracking ?? false;
+      final verticalOffset = _rig.locomotionVerticalOffset;
+      final trackedEyeCenter = verticalOffset == 0
+          ? _rig.eyeCenter
+          : (_spatialEyeCenter
+              ..setFrom(_rig.eyeCenter)
+              ..y -= verticalOffset);
       final physicalDelta = spatialBridge.syncRigPoseAndSampleLocomotion(
-        rigEyeCenter: _rig.eyeCenter,
+        rigEyeCenter: trackedEyeCenter,
         rigYaw: _rig.yaw,
+        rigBodyYaw: _rig.bodyYaw,
         rigPitch: _rig.pitch,
         dtSeconds: dt,
         nativeVioTracking: nativeVioActive,
@@ -805,10 +860,8 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         _rig.eyeCenter.x += physicalDelta.x;
         _rig.eyeCenter.z += physicalDelta.z;
         if (physicalDelta.y.abs() > 1e-4) {
-          _rig.eyeCenter.y = (_rig.eyeCenter.y + physicalDelta.y).clamp(
-            0.85,
-            2.15,
-          );
+          final trackedHeight = trackedEyeCenter.y + physicalDelta.y;
+          _rig.eyeCenter.y = trackedHeight.clamp(0.85, 2.15) + verticalOffset;
         }
       }
     }
@@ -1017,13 +1070,30 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
             node.name != _worldHomeNodeName &&
             (view.gazeFilter?.call(node) ?? true),
       ),
-      pickGeometry: () => view.scene.raycast(
-        ray,
-        where: (node) =>
-            !node.name.startsWith(VrControllerFeedbackVisuals.nodePrefix) &&
-            node.name != _worldHomeNodeName &&
-            (view.gazeFilter?.call(node) ?? true),
-      ),
+      pickGeometry: () {
+        if (_hasGeometryRayCache && _geometryPickAgeFrames < 3) {
+          final dx = ray.origin.x - _lastGeometryRayOrigin.x;
+          final dy = ray.origin.y - _lastGeometryRayOrigin.y;
+          final dz = ray.origin.z - _lastGeometryRayOrigin.z;
+          final originMoved2 = dx * dx + dy * dy + dz * dz;
+          final dirCos = ray.direction.dot(_lastGeometryRayDir);
+          if (originMoved2 <= 4e-6 && (1.0 - dirCos) <= 3.5e-6) {
+            _geometryPickAgeFrames++;
+            return _cachedGeometryHit;
+          }
+        }
+        _lastGeometryRayOrigin.setFrom(ray.origin);
+        _lastGeometryRayDir.setFrom(ray.direction);
+        _geometryPickAgeFrames = 0;
+        _hasGeometryRayCache = true;
+        return _cachedGeometryHit = view.scene.raycast(
+          ray,
+          where: (node) =>
+              !node.name.startsWith(VrControllerFeedbackVisuals.nodePrefix) &&
+              node.name != _worldHomeNodeName &&
+              (view.gazeFilter?.call(node) ?? true),
+        );
+      },
     );
     _pointerDistance = _pointerResolver.distance;
     return target;
@@ -1126,7 +1196,11 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     final target =
         view.targetRefreshRateHz ??
         (displayHz.isFinite && displayHz > 0 ? displayHz : 60.0);
+    if (_qualityPolicy.targetRefreshRateHz != target) {
+      _qualityMonitor.resetThermalEvidence();
+    }
     _qualityPolicy.targetRefreshRateHz = target;
+    _qualityMonitor.setThermalStatusReader(view.readThermalStatus);
     _qualityMonitor.setActiveForContext(context, enabled: view.dynamicScaling);
   }
 
@@ -1135,6 +1209,26 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     if (!mounted || !view.dynamicScaling || preset == null) return;
     if (preset.tier == VrQualityTier.low) return;
     setState(() => _applyPreset(preset.stepDown));
+  }
+
+  void _recoverQuality() {
+    final current = _preset;
+    final requested = _requestedPreset;
+    if (!mounted ||
+        !view.dynamicScaling ||
+        current == null ||
+        requested == null ||
+        current.tier.index >= requested.tier.index) {
+      return;
+    }
+    final nextTier = current.tier.index + 1;
+    // Descending from the ceiling preserves every custom budget. Returning
+    // to the requested tier restores the exact object supplied by the host.
+    var next = requested;
+    while (next.tier.index > nextTier) {
+      next = next.stepDown;
+    }
+    setState(() => _applyPreset(next));
   }
 
   @override
@@ -1147,7 +1241,10 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
           context,
           explicitQuality: view.quality,
         );
-    if (_preset == null) _applyPreset(preset);
+    if (_preset == null) {
+      _requestedPreset = preset;
+      _applyPreset(preset);
+    }
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
     final isHandheldMono = vrHandheldConsoleMode.value;
@@ -1193,6 +1290,11 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
           if (effW < 0.999 ||
               effH < 0.999 ||
               cullState.dynamicFarCullMeters != null) {
+            final conv = _rig.convergenceDistance;
+            final convClipShift =
+                (conv != null && conv.isFinite && conv > 0.05)
+                ? (_rig.ipd * 0.5 / conv)
+                : 0.0;
             return VrFixedFoveation.cropStereoViewsToActiveLens(
               eyes,
               viewportSize: constraints.biggest,
@@ -1211,18 +1313,30 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
                     fovRadiansY: _rig.cameraRig.fovY,
                     fullEyeAspectRatio: fullEyeAspect,
                     normalizedCropRect: cropRect,
-                    horizontalClipShift: _rig.stereoImageInset,
+                    horizontalClipShift: _rig.stereoImageInset + convClipShift,
                     dynamicFarCullMeters: cullState.dynamicFarCullMeters,
                   ),
             );
           }
           return eyes;
         },
-        pixelRatio: dpr * preset.pixelRatioScale,
+        pixelRatio:
+            dpr *
+            preset.pixelRatioScale *
+            ((view.sgsrUpscale != null &&
+                    view.sgsrUpscale!.isActive &&
+                    _sgsrShaderReady)
+                ? view.sgsrUpscale!.internalRenderScale
+                : 1.0),
         onTick: _tick,
       ),
     );
 
+    final sgsrConfig = view.sgsrUpscale;
+    final activeSgsrScale =
+        (sgsrConfig != null && sgsrConfig.isActive && _sgsrShaderReady)
+        ? sgsrConfig.internalRenderScale
+        : 1.0;
     final effectiveGaze = view.gazeEnabled || _systemGazeEnabled;
     return VrLensWarpPostProcess(
       enabled: !isHandheldMono,
@@ -1244,7 +1358,13 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
                   }
                 }
               : null,
-          child: scene,
+          child: VrSgsrUpscalePostProcess(
+            config: sgsrConfig,
+            effectiveRenderScale: preset.pixelRatioScale * activeSgsrScale,
+            stereoSplit: !isHandheldMono,
+            onShaderReadyChanged: _onSgsrShaderReadyChanged,
+            child: scene,
+          ),
         ),
         controllerFeedback: view.showControllerFeedback && !isHandheldMono
             ? IgnorePointer(

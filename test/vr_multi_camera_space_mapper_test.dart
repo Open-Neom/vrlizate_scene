@@ -155,5 +155,32 @@ void main() {
       sonar.advance(0.7); // Past 1.2s -> inactive
       expect(sonar.isActive, isFalse);
     });
+
+    test('caps free contour accumulation to maxFreeContours and prunes expired contours (A10)', () {
+      final mapper = VrMultiCameraSpaceMapper(
+        mode: VrPassthroughMode.aiWireframeContours,
+        maxFreeContours: 6,
+      );
+      final orientation = vm.Quaternion.axisAngle(
+        vm.Vector3(1.0, 0.0, 0.0),
+        -1.0,
+      );
+      for (var i = 0; i < 20; i++) {
+        mapper.projectImageContourToWorld(
+          uvStart: vm.Vector2(0.2, 0.5),
+          uvEnd: vm.Vector2(0.8, 0.5),
+          cameraPosition: vm.Vector3(i * 0.1, 1.1, 0.0),
+          cameraOrientation: orientation,
+          timestampMicros: i * 100000,
+        );
+      }
+      expect(mapper.freeContourCount, 6);
+      expect(mapper.allContourSegments.length, 6);
+
+      // Advance clock past defaultMaxContourAgeMicros (5s) -> all timestamped contours expire
+      final pruned = mapper.pruneStaleContours(nowMicros: 10000000);
+      expect(pruned, isTrue);
+      expect(mapper.freeContourCount, 0);
+    });
   });
 }

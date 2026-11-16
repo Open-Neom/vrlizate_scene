@@ -72,8 +72,11 @@ void main() {
       );
     });
 
-    test('triggers criticalBoundaryBreach and 100% passthrough when <= 0.42 m from wall or furniture', () {
-      final mapper = VrMultiCameraSpaceMapper(mode: VrPassthroughMode.off);
+    test('triggers criticalBoundaryBreach, keeps manual controllerPassthroughMix separate, and restores mix when cleared', () {
+      final mapper = VrMultiCameraSpaceMapper(
+        mode: VrPassthroughMode.multiCameraHybridSpace,
+        controllerPassthroughMix: 0.20,
+      );
       mapper.upsertObject(physicalWall);
 
       // Viewer at z = -1.55 -> 0.35 m from wall face (<= 0.42 m critical)
@@ -85,12 +88,165 @@ void main() {
       expect(breach.alertLevel, VrGuardianAlertLevel.criticalBoundaryBreach);
       expect(breach.isCritical, isTrue);
       expect(breach.recommendedPassthroughFloorMix, 1.0);
-      // SpaceMapper controllerPassthroughMix was automatically raised to 1.0!
-      expect(mapper.controllerPassthroughMix, 1.0);
+      // Temporary Guardian floor rises to 1.0 while manual mix stays 0.20!
+      expect(mapper.guardianPassthroughFloorMix, 1.0);
+      expect(mapper.controllerPassthroughMix, closeTo(0.20, 1e-4));
+      expect(mapper.effectivePassthroughMix, 1.0);
+      expect(
+        mapper
+            .evaluateVisibility(
+              viewerPosition: Vector3(0.0, 1.65, -1.55),
+              headPitchRadians: 0.0,
+            )
+            .cameraFeedOpacity,
+        1.0,
+      );
       expect(
         breach.statusMessage,
         VrSceneTranslationConstants.guardianStatusCriticalBreach,
       );
+
+      // Once obstacle clears, temporary floor drops to 0.0 and manual 0.20 mix is restored.
+      mapper.removeObject('wall_north');
+      final cleared = guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3(0.0, 1.65, -1.55),
+        spaceMapper: mapper,
+      );
+      expect(cleared.alertLevel, VrGuardianAlertLevel.clear);
+      expect(mapper.guardianPassthroughFloorMix, 0.0);
+      expect(mapper.controllerPassthroughMix, closeTo(0.20, 1e-4));
+      expect(mapper.effectivePassthroughMix, closeTo(0.20, 1e-4));
+    });
+
+    test('ignores zero-confidence detections, respects VrPassthroughMode.off unless opted in, and prunes stale obstacles (A06)', () {
+      final mapper = VrMultiCameraSpaceMapper(mode: VrPassthroughMode.off);
+
+      // 1. Zero-confidence obstacle never triggers Guardian alert or passthrough
+      mapper.upsertObject(
+        VrDetectedSpatialObject.fromBoundingBox3D(
+          id: 'uncertain',
+          label: 'uncertain',
+          category: VrSpatialObjectCategory.wall,
+          centerWorld: Vector3(0.0, 1.6, -0.2),
+          extentsWorld: Vector3.all(0.1),
+          confidence: 0.0,
+        ),
+      );
+      final zeroConf = guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3.zero(),
+        spaceMapper: mapper,
+      );
+      expect(zeroConf.alertLevel, VrGuardianAlertLevel.clear);
+      expect(
+        mapper
+            .evaluateVisibility(
+              viewerPosition: Vector3.zero(),
+              headPitchRadians: 0.0,
+            )
+            .cameraFeedOpacity,
+        0.0,
+      );
+
+      // 2. High-confidence obstacle in mode=off raises alertLevel, but keeps cameraFeedOpacity=0
+      //    unless allowGuardianPassthroughWhenOff or allowOverrideOffMode is explicitly enabled.
+      mapper.clear();
+      mapper.upsertObject(
+        physicalWall,
+        timestampMicros: 100000,
+      );
+      final offModeBreach = guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3(0.0, 1.65, -1.55),
+        spaceMapper: mapper,
+      );
+      expect(
+        offModeBreach.alertLevel,
+        VrGuardianAlertLevel.criticalBoundaryBreach,
+      );
+      expect(mapper.controllerPassthroughMix, 0.0);
+      expect(mapper.guardianPassthroughFloorMix, 0.0);
+      expect(
+        mapper
+            .evaluateVisibility(
+              viewerPosition: Vector3(0.0, 1.65, -1.55),
+              headPitchRadians: 0.0,
+            )
+            .cameraFeedOpacity,
+        0.0,
+      );
+
+      // Opt-in override in mode=off turns on temporary passthrough floor AND effective cameraFeedOpacity=1.0
+      // without mutating manual controllerPassthroughMix or persistent allowGuardianPassthroughWhenOff.
+      final optInBreach = guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3(0.0, 1.65, -1.55),
+        spaceMapper: mapper,
+        allowOverrideOffMode: true,
+        nowMicros: 500000,
+      );
+      expect(optInBreach.isCritical, isTrue);
+      expect(mapper.guardianPassthroughFloorMix, 1.0);
+      expect(mapper.effectivePassthroughMix, 1.0);
+      expect(mapper.controllerPassthroughMix, 0.0);
+      expect(mapper.allowGuardianPassthroughWhenOff, isFalse);
+      expect(
+        mapper
+            .evaluateVisibility(
+              viewerPosition: Vector3(0.0, 1.65, -1.55),
+              headPitchRadians: 0.0,
+            )
+            .cameraFeedOpacity,
+        1.0,
+      );
+
+      // Next evaluate without allowOverrideOffMode immediately restores floor=0 and cameraFeedOpacity=0
+      // without leaving any permanent opt-in enabled.
+      final nextWithoutFlag = guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3(0.0, 1.65, -1.55),
+        spaceMapper: mapper,
+        nowMicros: 600000,
+      );
+      expect(nextWithoutFlag.isCritical, isTrue);
+      expect(mapper.guardianPassthroughFloorMix, 0.0);
+      expect(mapper.effectivePassthroughMix, 0.0);
+      expect(mapper.controllerPassthroughMix, 0.0);
+      expect(mapper.allowGuardianPassthroughWhenOff, isFalse);
+      expect(
+        mapper
+            .evaluateVisibility(
+              viewerPosition: Vector3(0.0, 1.65, -1.55),
+              headPitchRadians: 0.0,
+            )
+            .cameraFeedOpacity,
+        0.0,
+      );
+
+      // Re-enable per-call opt-in, then let stale obstacle (> 900 ms after timestampMicros: 100000) expire automatically.
+      guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3(0.0, 1.65, -1.55),
+        spaceMapper: mapper,
+        allowOverrideOffMode: true,
+        nowMicros: 700000,
+      );
+      expect(mapper.effectivePassthroughMix, 1.0);
+
+      final expired = guardian.evaluateSpaceMapper(
+        viewerPosition: Vector3(0.0, 1.65, -1.55),
+        spaceMapper: mapper,
+        allowOverrideOffMode: true,
+        nowMicros: 1500000,
+      );
+      expect(expired.alertLevel, VrGuardianAlertLevel.clear);
+      expect(mapper.guardianPassthroughFloorMix, 0.0);
+      expect(mapper.effectivePassthroughMix, 0.0);
+      expect(
+        mapper
+            .evaluateVisibility(
+              viewerPosition: Vector3(0.0, 1.65, -1.55),
+              headPitchRadians: 0.0,
+            )
+            .cameraFeedOpacity,
+        0.0,
+      );
+      expect(mapper.objects, isEmpty);
     });
 
     test('computes comfort vignette intensity (0.0 .. 0.40) during fast linear or angular locomotion', () {

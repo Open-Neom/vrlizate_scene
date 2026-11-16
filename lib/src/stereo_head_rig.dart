@@ -39,6 +39,27 @@ class StereoHeadRig implements RotationTarget {
   /// The underlying vrlizate camera rig (position, rotation, IPD, FOV).
   final CameraRig cameraRig;
 
+  /// Virtual locomotion speed in meters per second at full stick deflection.
+  double locomotionSpeed = 3.0;
+
+  double _locomotionVerticalOffset = 0;
+
+  /// Virtual elevation, such as a jump, above the tracked viewer position.
+  /// The rendered eye position includes it in both mono and stereo.
+  double get locomotionVerticalOffset => _locomotionVerticalOffset;
+
+  set locomotionVerticalOffset(double value) {
+    if (!value.isFinite) {
+      throw ArgumentError.value(value, 'locomotionVerticalOffset');
+    }
+    if (_locomotionVerticalOffset == value) return;
+    final baseHeight = eyeCenter.y - _locomotionVerticalOffset;
+    eyeCenter.y = baseHeight + value;
+    // Keep the actual displacement applied to the Float32 position. Repeated
+    // jumps should not shift the standing height through accumulated rounding.
+    _locomotionVerticalOffset = value == 0 ? 0 : eyeCenter.y - baseHeight;
+  }
+
   final vm.Vector3 _physicalTranslation = vm.Vector3.zero();
   Object? _spatialOwner;
   void Function()? _spatialRecenter;
@@ -144,6 +165,7 @@ class StereoHeadRig implements RotationTarget {
   void reset() {
     cameraRig.reset();
     _physicalTranslation.setZero();
+    _locomotionVerticalOffset = 0;
     _spatialRecenter?.call();
   }
 
@@ -170,6 +192,7 @@ class StereoHeadRig implements RotationTarget {
   /// World-space midpoint between the eyes, including physical translation.
   /// Assigning/mutating it changes the virtual anchor while retaining the
   /// current physical offset; the next identical pose therefore cannot drift.
+  /// The assigned position also includes any current virtual elevation.
   vm.Vector3 get eyeCenter => cameraRig.position;
   set eyeCenter(vm.Vector3 value) => cameraRig.position = value;
 

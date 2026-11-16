@@ -199,7 +199,10 @@ class VrPredictiveMotionCuller {
             .clamp(0.0, 1.0);
     final targetScale =
         1.0 - (1.0 - minSaccadicScissorScale) * (saccadeT * saccadeT);
-    final scaleAlpha = targetScale < _smoothSaccadicScale ? 0.42 : 0.18;
+    final baseScaleAlpha = targetScale < _smoothSaccadicScale ? 0.42 : 0.18;
+    final frameUnits = (dtSeconds * 60.0).clamp(0.25, 4.0);
+    final scaleAlpha =
+        (1.0 - math.pow(1.0 - baseScaleAlpha, frameUnits)).toDouble();
     _smoothSaccadicScale += (targetScale - _smoothSaccadicScale) * scaleAlpha;
 
     double? dynamicFar;
@@ -273,8 +276,8 @@ class VrPredictiveMotionCuller {
     final planes = <vm.Plane>[];
     final tanHalfY = math.tan(fovRadiansY * 0.5);
     final tanHalfX = tanHalfY * fullEyeAspectRatio;
-    final guardX = math.tan(safetyMarginRadians) + horizontalClipShift.abs();
     final guardY = math.tan(safetyMarginRadians);
+    final guardX = guardY + horizontalClipShift.abs() * math.max(1.0, tanHalfX);
 
     // Map normalized crop [0..1] (top-left origin) into tangent bounds:
     // u=0 -> -tanHalfX, u=1 -> +tanHalfX; v=0 -> +tanHalfY (top), v=1 -> -tanHalfY (bottom).

@@ -39,10 +39,21 @@ void main() {
 
         VrLook.cinematic.applyTo(s, VrQualityPreset.high);
         expect(s.ambientOcclusionEnabled, isTrue);
+        expect(s.ambientOcclusionMethod, AmbientOcclusionMethod.groundTruth);
         expect(s.ambientOcclusionHalfResolution, isTrue);
+        expect(s.ambientOcclusionBentNormals, isFalse);
+        expect(
+          s.ambientOcclusionSpecularMode,
+          SpecularAmbientOcclusionMode.simple,
+        );
 
         VrLook.cinematic.applyTo(s, VrQualityPreset.ultra);
         expect(s.ambientOcclusionEnabled, isTrue);
+        expect(s.ambientOcclusionBentNormals, isTrue);
+        expect(
+          s.ambientOcclusionSpecularMode,
+          SpecularAmbientOcclusionMode.bentCone,
+        );
       },
     );
 
@@ -65,13 +76,18 @@ void main() {
       expect(s.fogEnabled, isTrue);
       expect(s.fogMode, FogMode.exponential);
       expect(s.fogDensity, closeTo(Fog.visibilityDensity(80), 1e-9));
+      expect(s.fogSkyColorInfluence, greaterThan(0));
+      expect(s.fogSunInScatter, greaterThan(0));
       expect(s.exposure, lessThan(1.0));
     });
 
     test('a look with no fog leaves fog disabled', () {
       final s = EnvironmentSettings();
+      VrLook.night.applyTo(s, VrQualityPreset.medium);
       VrLook.cinematic.applyTo(s, VrQualityPreset.high);
       expect(s.fogEnabled, isFalse);
+      expect(s.fogSkyColorInfluence, 0);
+      expect(s.fogSunInScatter, 0);
     });
   });
 }

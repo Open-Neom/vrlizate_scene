@@ -212,6 +212,83 @@ void main() {
   );
 
   test(
+    'batch removal snapshots a whole subtree and preserves shared survivors',
+    () {
+      final source = core.Scene();
+      final geometry = core.CubeGeometry();
+      final material = core.VRMaterial();
+      final group = core.Node(name: 'same');
+      final children = List.generate(
+        2,
+        (_) =>
+            core.MeshNode(name: 'same', geometry: geometry, material: material),
+      );
+      for (final child in children) {
+        group.addChild(child);
+      }
+      final survivor = core.MeshNode(
+        name: 'same',
+        geometry: geometry,
+        material: material,
+      );
+      source
+        ..add(group)
+        ..add(survivor);
+      final resources = RecordingResources();
+      final adapter = VrRetainedSceneAdapter(
+        source: source,
+        resources: resources,
+      );
+      adapter.sync();
+      final oldGroup = adapter.sceneNodeFor(group)!;
+      final oldChildren = children
+          .map((n) => adapter.sceneNodeFor(n)!)
+          .toList();
+      final kept = adapter.sceneNodeFor(survivor)!;
+      for (var i = 0; i < 30; i++) {
+        survivor.transform.position.x = i / 100;
+        adapter.sync(elapsedSeconds: i / 60);
+        expect(adapter.sceneNodeFor(survivor), same(kept));
+      }
+      expect(adapter.nodeCount, 5);
+      source.remove(group);
+      adapter.sync();
+      expect(adapter.nodeCount, 2);
+      for (final n in [group, ...children]) {
+        expect(adapter.sceneNodeFor(n), isNull);
+      }
+      for (final n in [oldGroup, ...oldChildren]) {
+        expect(adapter.sourceNodeFor(n), isNull);
+        expect(n.parent, isNull);
+      }
+      expect(adapter.sceneNodeFor(survivor), same(kept));
+      expect(adapter.geometryCount, 1);
+      expect(adapter.materialCount, 1);
+      expect(resources.geometries, 1);
+      expect(resources.materials, 1);
+      source.add(group);
+      adapter.sync();
+      expect(adapter.nodeCount, 5);
+      expect(adapter.sceneNodeFor(group), isNot(same(oldGroup)));
+      for (var i = 0; i < children.length; i++) {
+        expect(adapter.sceneNodeFor(children[i]), isNot(same(oldChildren[i])));
+        expect(adapter.sourceNodeFor(oldChildren[i]), isNull);
+      }
+      expect(adapter.sceneNodeFor(survivor), same(kept));
+      expect(resources.geometries, 1);
+      expect(resources.materials, 1);
+      source
+        ..remove(group)
+        ..remove(survivor);
+      adapter.sync();
+      expect(adapter.nodeCount, 1);
+      expect(adapter.geometryCount, 0);
+      expect(adapter.materialCount, 0);
+      adapter.dispose();
+    },
+  );
+
+  test(
     'wireframe and explicit geometry invalidation upload only when needed',
     () {
       final source = core.Scene();
@@ -444,7 +521,7 @@ void main() {
         ),
         core.MeshNode(
           geometry: core.CubeGeometry(),
-          material: core.PBRMaterial(emissionMap: core.VRTexture()),
+          material: core.PBRMaterial(envMap: core.VRTexture()),
         ),
       ]) {
         final source = core.Scene()..add(node);
@@ -457,6 +534,33 @@ void main() {
       }
     },
   );
+
+  test('emission and ambient-occlusion maps bind once with strength', () async {
+    final emissive = core.VRTexture(name: 'emissive');
+    await emissive.fromColor(const ui.Color(0xFF00E5FF));
+    final ao = core.VRTexture(name: 'ao');
+    await ao.fromColor(const ui.Color(0xFF909090));
+    final material = core.PBRMaterial(
+      emissionMap: emissive,
+      emissionIntensity: 2.0,
+      aoMap: ao,
+      aoIntensity: 0.75,
+    );
+    final mesh = core.LitMeshNode(
+      geometry: core.CubeGeometry(),
+      material: material,
+    );
+    final source = core.Scene()..add(mesh);
+    final resources = TexturingResources();
+    final adapter = VrRetainedSceneAdapter(source: source, resources: resources);
+    adapter.sync();
+    expect(adapter.pendingSurfaceCount, 1);
+    await adapter.pendingTextures;
+    expect(resources.uploadedImages, [emissive.image, ao.image]);
+    adapter.sync();
+    expect(resources.uploadedImages.length, 2);
+    adapter.dispose();
+  });
 
   test(
     'a legacy map still loading is bound by the sync after it lands',

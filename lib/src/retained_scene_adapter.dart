@@ -9,6 +9,8 @@ import 'package:flutter_scene/scene.dart' as fs;
 import 'package:vector_math/vector_math.dart' as vm;
 import 'package:vrlizate/vrlizate.dart' as core;
 
+import 'vr_mesh_tangents.dart';
+
 /// GPU resource boundary. Override in tests, or use [headless], to exercise
 /// scene synchronization without pretending a Flutter GPU context exists.
 abstract class VrRetainedResourceFactory {
@@ -134,12 +136,19 @@ class VrRetainedGpuResources extends VrRetainedResourceFactory {
     for (var i = 0; i < geometry.uvs.length; i++) {
       geometry.uvs[i].copyIntoArray(uv, i * 2);
     }
+    final indices = List<int>.of(geometry.indices);
     return fs.MeshData(
       positions: positions,
       vertexCount: geometry.vertexCount,
       normals: normals,
       texCoords: uv,
-      indices: List<int>.of(geometry.indices),
+      tangents: VrMeshTangents.compute(
+        positions: positions,
+        normals: normals,
+        texCoords: uv,
+        indices: indices,
+      ),
+      indices: indices,
     );
   }
 
@@ -199,7 +208,7 @@ class VrRetainedGpuResources extends VrRetainedResourceFactory {
       fs.Texture2D.fromImage(
         image,
         content: normal ? fs.TextureContent.normal : fs.TextureContent.color,
-        sampling: const fs.TextureSampling(maxAnisotropy: 4),
+        sampling: const fs.TextureSampling(maxAnisotropy: 8),
       );
 
   @override
@@ -426,10 +435,18 @@ class VrRetainedSceneAdapter {
   final vm.Vector3 _ambientGround = vm.Vector3.zero();
   final vm.Vector3 _lastAmbient = vm.Vector3.all(-1);
   final vm.Vector3 _lastAmbientGround = vm.Vector3.all(-1);
+  ui.Color? _skyBackgroundColor, _skyZenithColor, _skyGroundColor;
+  ui.Color? _lastFogColor;
+  vm.Vector3 _fogColorLinear = vm.Vector3.zero();
+  bool _skyDefaultDome = false;
   VrRetainedSkyDome? _lastSky;
   bool _skyApplied = true;
   Object? _surfaceError;
   int _epoch = 0;
+  int _nodesTouched = 0;
+  int _geometryTouched = 0;
+  int _litTouched = 0;
+  int _unlitTouched = 0;
   bool _disposed = false;
   bool _hasAmbient = false;
   bool _hasHemisphere = false;
@@ -498,21 +515,42 @@ class VrRetainedSceneAdapter {
     }
     if (_surfaceError case final error?) throw error;
     _epoch++;
+    _nodesTouched = 0;
+    _geometryTouched = 0;
+    _litTouched = 0;
+    _unlitTouched = 0;
     _ambient.setValues(0, 0, 0);
     _ambientGround.setValues(0, 0, 0);
     _hasAmbient = false;
     _hasHemisphere = false;
     _visit(source.root, _root, true, elapsedSeconds);
-    final removed = _nodes.values.where((e) => e.epoch != _epoch).toList();
-    for (final entry in removed) {
-      entry.surfaceGeneration++;
-      entry.node.parent?.remove(entry.node);
-      _sources.remove(entry.node);
-      _nodes.remove(entry.source);
+    // Most frames keep every entry. Only scan/allocate when count mismatches;
+    // finish collecting before removals, which may trigger unmount callbacks.
+    if (_nodesTouched != _nodes.length) {
+      List<_NodeEntry>? removed;
+      for (final entry in _nodes.values) {
+        if (entry.epoch != _epoch) {
+          (removed ??= <_NodeEntry>[]).add(entry);
+        }
+      }
+      if (removed != null) {
+        for (final entry in removed) {
+          entry.surfaceGeneration++;
+          entry.node.parent?.remove(entry.node);
+          _sources.remove(entry.node);
+          _nodes.remove(entry.source);
+        }
+      }
     }
-    _geometry.removeWhere((_, value) => value.epoch != _epoch);
-    _lit.removeWhere((_, value) => value.epoch != _epoch);
-    _unlit.removeWhere((_, value) => value.epoch != _epoch);
+    if (_geometryTouched != _geometry.length) {
+      _geometry.removeWhere((_, value) => value.epoch != _epoch);
+    }
+    if (_litTouched != _lit.length) {
+      _lit.removeWhere((_, value) => value.epoch != _epoch);
+    }
+    if (_unlitTouched != _unlit.length) {
+      _unlit.removeWhere((_, value) => value.epoch != _epoch);
+    }
     if (!_hasAmbient) {
       _ambient.setValues(
         _linear(source.ambientColor.r),
@@ -532,40 +570,58 @@ class VrRetainedSceneAdapter {
       _lastAmbient.setFrom(_ambient);
       _lastAmbientGround.setFrom(_ambientGround);
     }
-    final background = _linearColor(source.backgroundColor).xyz;
-    final sky = source.hasSkyDome
-        ? VrRetainedSkyDome(
-            zenith: _linearColor(
-              source.skyZenithColor ?? source.backgroundColor,
-            ).xyz,
-            horizon: background,
-            ground: _linearColor(
-              source.skyGroundColor ?? source.backgroundColor,
-            ).xyz,
-          )
-        : defaultSkyDome
-        ? VrRetainedSkyDome(
-            zenith: background * 0.45,
-            horizon: background,
-            ground: background * 0.3,
-          )
-        : null;
-    if (sky != _lastSky || !_skyApplied) {
-      _skyApplied = resources.setSky(_scene, sky);
+    if (_skyBackgroundColor != source.backgroundColor ||
+        _skyZenithColor != source.skyZenithColor ||
+        _skyGroundColor != source.skyGroundColor ||
+        _skyDefaultDome != defaultSkyDome) {
+      _skyBackgroundColor = source.backgroundColor;
+      _skyZenithColor = source.skyZenithColor;
+      _skyGroundColor = source.skyGroundColor;
+      _skyDefaultDome = defaultSkyDome;
+      VrRetainedSkyDome? sky;
+      if (source.hasSkyDome || defaultSkyDome) {
+        final background = _linearColor(source.backgroundColor).xyz;
+        sky = source.hasSkyDome
+            ? VrRetainedSkyDome(
+                zenith: _linearColor(
+                  source.skyZenithColor ?? source.backgroundColor,
+                ).xyz,
+                horizon: background,
+                ground: _linearColor(
+                  source.skyGroundColor ?? source.backgroundColor,
+                ).xyz,
+              )
+            : VrRetainedSkyDome(
+                zenith: background * 0.45,
+                horizon: background,
+                ground: background * 0.3,
+              );
+      }
+      if (sky != _lastSky) _skyApplied = false;
       _lastSky = sky;
     }
+    if (!_skyApplied) {
+      _skyApplied = resources.setSky(_scene, _lastSky);
+    }
+    final fogActive = source.fogDensity > 0;
+    if (_lastFogColor != source.fogColor) {
+      _lastFogColor = source.fogColor;
+      _fogColorLinear = vm.Vector3(
+        _linear(source.fogColor.r),
+        _linear(source.fogColor.g),
+        _linear(source.fogColor.b),
+      );
+    }
     _scene?.fog
-      ?..enabled = source.fogDensity > 0
+      ?..enabled = fogActive
       ..mode = fs.FogMode.exponential
       ..density = source.fogDensity
       ..maxOpacity = source.fogMaxOpacity.clamp(0.0, 1.0)
       ..cutoffDistance = source.fogCutoffDistance
       ..heightFalloff = source.fogHeightFalloff
-      ..color = vm.Vector3(
-        _linear(source.fogColor.r),
-        _linear(source.fogColor.g),
-        _linear(source.fogColor.b),
-      );
+      ..skyColorInfluence = fogActive ? 0.24 : 0.0
+      ..sunInScatter = fogActive ? 0.18 : 0.0
+      ..color = _fogColorLinear;
   }
 
   void _visit(
@@ -575,7 +631,10 @@ class VrRetainedSceneAdapter {
     double elapsed,
   ) {
     final entry = _nodes.putIfAbsent(sourceNode, () => _create(sourceNode));
-    entry.epoch = _epoch;
+    if (entry.epoch != _epoch) {
+      entry.epoch = _epoch;
+      _nodesTouched++;
+    }
     if (!identical(entry.node.parent, parent)) {
       entry.node.parent?.remove(entry.node);
       parent.add(entry.node);
@@ -795,8 +854,11 @@ class VrRetainedSceneAdapter {
   }
 
   fs.Geometry? _geometryFor(core.Geometry source, bool wireframe) {
-    final entry = _geometry.putIfAbsent(source, _GeometryEntry.new)
-      ..epoch = _epoch;
+    final entry = _geometry.putIfAbsent(source, _GeometryEntry.new);
+    if (entry.epoch != _epoch) {
+      entry.epoch = _epoch;
+      _geometryTouched++;
+    }
     if (wireframe) {
       if (!entry.wireCreated) {
         entry.wire = resources.createGeometry(source, wireframe: true);
@@ -816,7 +878,15 @@ class VrRetainedSceneAdapter {
     final entry = cache.putIfAbsent(
       source,
       () => _MaterialEntry(resources.createMaterial(unlit: unlit)),
-    )..epoch = _epoch;
+    );
+    if (entry.epoch != _epoch) {
+      entry.epoch = _epoch;
+      if (unlit) {
+        _unlitTouched++;
+      } else {
+        _litTouched++;
+      }
+    }
     final signature = Object.hash(
       source.color,
       source.emissive,
@@ -825,6 +895,7 @@ class VrRetainedSceneAdapter {
       source.roughness,
       source.doubleSided,
       source is core.PBRMaterial ? source.emissionIntensity : 1.0,
+      source is core.PBRMaterial ? source.aoIntensity : 1.0,
     );
     if (entry.signature != signature) {
       resources.updateMaterial(entry.material, source);
@@ -839,7 +910,8 @@ class VrRetainedSceneAdapter {
   /// semantics): the legacy color tints the color map, the roughness map
   /// drives roughness, and the author's metallic scalar still scales the
   /// map's R channel (a gray roughness scan used as an MR map stays
-  /// dielectric).
+  /// dielectric). Likewise, an emission map with default black [emissive]
+  /// tint promotes `emissiveFactor` to `emissionIntensity` so the map shines.
   void _applyTextureFactors(_MaterialEntry entry, core.VRMaterial source) {
     final target = entry.material;
     if (target is! fs.PhysicallyBasedMaterial) return;
@@ -848,10 +920,18 @@ class VrRetainedSceneAdapter {
         ..roughnessFactor = 1
         ..metallicFactor = source.metallic;
     }
+    if (source is core.PBRMaterial) {
+      target.occlusionStrength = source.aoIntensity.clamp(0.0, 1.0);
+      if (target.emissiveTexture != null &&
+          source.emissive == const ui.Color(0xFF000000)) {
+        final e = source.emissionIntensity;
+        target.emissiveFactor = vm.Vector4(e, e, e, 0);
+      }
+    }
   }
 
-  /// Binds the legacy maps (base color, normal, metallic-roughness) to the
-  /// GPU material, uploading each [core.VRTexture] once per adapter.
+  /// Binds PBR maps (base color, normal, metallic-roughness, emission, AO) to
+  /// the GPU material, uploading each [core.VRTexture] once per adapter.
   void _syncTextures(_MaterialEntry entry, core.VRMaterial source) {
     final target = entry.material;
     // A map still loading (VRTexture.loadAsset is async) is treated as
@@ -867,18 +947,32 @@ class VrRetainedSceneAdapter {
     final mrMap = ready(
       source is core.PBRMaterial ? source.metallicRoughnessMap : null,
     );
+    final emissionMap = ready(
+      source is core.PBRMaterial ? source.emissionMap : null,
+    );
+    final aoMap = ready(
+      source is core.PBRMaterial ? source.aoMap : null,
+    );
     final normalScale = source is core.PBRMaterial ? source.normalScale : 1.0;
+    final aoIntensity = source is core.PBRMaterial ? source.aoIntensity : 1.0;
     if (identical(entry.colorMap, colorMap) &&
         identical(entry.normalMap, normalMap) &&
-        identical(entry.metallicRoughnessMap, mrMap)) {
-      if (target is fs.PhysicallyBasedMaterial)
-        target.normalScale = normalScale;
+        identical(entry.metallicRoughnessMap, mrMap) &&
+        identical(entry.emissionMap, emissionMap) &&
+        identical(entry.aoMap, aoMap)) {
+      if (target is fs.PhysicallyBasedMaterial) {
+        target
+          ..normalScale = normalScale
+          ..occlusionStrength = aoIntensity.clamp(0.0, 1.0);
+      }
       return;
     }
     entry
       ..colorMap = colorMap
       ..normalMap = normalMap
-      ..metallicRoughnessMap = mrMap;
+      ..metallicRoughnessMap = mrMap
+      ..emissionMap = emissionMap
+      ..aoMap = aoMap;
     final generation = ++entry.textureGeneration;
     if (target == null) return;
 
@@ -892,6 +986,8 @@ class VrRetainedSceneAdapter {
           ? null
           : await upload(normalMap, normal: true);
       final mr = mrMap == null ? null : await upload(mrMap);
+      final emissive = emissionMap == null ? null : await upload(emissionMap);
+      final ao = aoMap == null ? null : await upload(aoMap);
       if (_disposed || entry.textureGeneration != generation) return;
       fs.TextureTransform repeat(core.VRTexture? map) => map == null
           ? fs.TextureTransform()
@@ -904,7 +1000,12 @@ class VrRetainedSceneAdapter {
           ..normalTextureTransform = repeat(normalMap)
           ..normalScale = normalScale
           ..metallicRoughnessTexture = mr
-          ..metallicRoughnessTextureTransform = repeat(mrMap);
+          ..metallicRoughnessTextureTransform = repeat(mrMap)
+          ..emissiveTexture = emissive
+          ..emissiveTextureTransform = repeat(emissionMap)
+          ..occlusionTexture = ao
+          ..occlusionTextureTransform = repeat(aoMap)
+          ..occlusionStrength = aoIntensity.clamp(0.0, 1.0);
         _applyTextureFactors(entry, source);
       } else if (target is fs.UnlitMaterial) {
         target
@@ -925,13 +1026,10 @@ class VrRetainedSceneAdapter {
     }
     if (material.blendMode != ui.BlendMode.srcOver ||
         (material is core.PBRMaterial &&
-            (material.emissionMap != null ||
-                material.aoMap != null ||
-                material.envMap != null ||
-                material.alphaMap != null))) {
+            (material.envMap != null || material.alphaMap != null))) {
       throw UnsupportedError(
-        'Retained scene ${node.name}: custom blend modes / emission, AO, '
-        'environment and alpha maps need an explicit GPU material conversion.',
+        'Retained scene ${node.name}: custom blend modes, environment and '
+        'alpha maps need an explicit GPU material conversion.',
       );
     }
   }
@@ -970,8 +1068,10 @@ class VrRetainedSceneAdapter {
     } else if (light.type == core.LightType.directional) {
       final target = entry.directional ??= fs.DirectionalLight(
         castsShadow: false,
-        shadowMaxDistance: 40,
+        shadowMaxDistance: 55,
         shadowCascadeCount: 2,
+        shadowSoftness: 0.14,
+        shadowFadeRange: 6.0,
       );
       final resolution = shadowMapResolution;
       final caster = resolution != null && (_shadowCaster ??= light) == light;
@@ -1067,6 +1167,7 @@ class VrRetainedSceneAdapter {
     _geometry.clear();
     _lit.clear();
     _unlit.clear();
+    _textures.clear();
   }
 
   void _ensureAlive() {
@@ -1123,6 +1224,8 @@ class _MaterialEntry {
   core.VRTexture? colorMap;
   core.VRTexture? normalMap;
   core.VRTexture? metallicRoughnessMap;
+  core.VRTexture? emissionMap;
+  core.VRTexture? aoMap;
   int textureGeneration = 0;
 }
 

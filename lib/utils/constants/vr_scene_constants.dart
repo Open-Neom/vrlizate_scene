@@ -181,6 +181,14 @@ abstract final class VrSceneConstants {
 
   static const double defaultLidarVoxelSizeMeters = 0.15;
   static const double minLidarVoxelSizeMeters = 0.02;
+  static const int defaultMaxTrackedSpatialObjects = 16;
+  static const int defaultMaxFreeContourSegments = 256;
+  static const int defaultMaxSpatialObjectAgeMicros = 900000;
+  static const int defaultMaxContourAgeMicros = 5000000;
+  static const int defaultMaxSyntheticLidarVoxels = 1024;
+  static const int defaultMaxSyntheticLidarObjects = 32;
+  static const int defaultMaxSyntheticLidarContours = 64;
+  static const int defaultSyntheticLidarVoxelTtlMicros = 30000000;
   static const double occupancyHitConfidenceDelta = 0.35;
   static const double multiModalSynergyBonus = 0.20;
   static const double minOccupiedVoxelConfidence = 0.50;
@@ -256,6 +264,7 @@ abstract final class VrSceneConstants {
 
   static const double guardianWarningDistanceMeters = 0.95;
   static const double guardianCriticalDistanceMeters = 0.42;
+  static const double guardianMinObstacleConfidence = 0.30;
   static const double guardianMaxComfortVignetteIntensity = 0.40;
   static const double guardianLinearSpeedVignetteThreshold = 0.80;
   static const double guardianLinearSpeedMaxVignette = 2.80;

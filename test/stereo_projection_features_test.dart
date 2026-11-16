@@ -3,7 +3,6 @@ import 'dart:ui' show Size;
 import 'package:flutter_scene/scene.dart' show PerspectiveProjection;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
-import 'package:vrlizate_scene/src/vr_controller_feedback_visuals.dart';
 import 'package:vrlizate_scene/vrlizate_scene.dart';
 
 void main() {

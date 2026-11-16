@@ -46,6 +46,7 @@ export 'src/vr_device_performance.dart';
 export 'src/vr_frame_metrics.dart';
 export 'src/vr_headset_profile.dart';
 export 'src/vr_lens_warp_post_process.dart';
+export 'src/vr_sgsr_upscale_post_process.dart';
 export 'src/vr_fixed_foveation.dart';
 export 'src/vr_predictive_motion_culler.dart';
 export 'src/stereo_head_rig.dart';
@@ -60,6 +61,11 @@ export 'src/retained_scene_adapter.dart';
 export 'src/retained_desktop_input.dart';
 export 'src/retained_demo_scene_view.dart';
 export 'src/lathe_geometry.dart';
+export 'src/vr_mesh_tangents.dart';
+export 'src/vr_scene_mesh_batch.dart';
+export 'src/vr_scene_material_cache.dart';
+export 'src/vr_contact_shadow.dart';
+export 'src/vr_directional_shadows.dart';
 export 'src/vr_glow.dart';
 export 'src/vr_particles.dart';
 export 'src/vr_sky.dart';
@@ -71,8 +77,10 @@ export 'src/vr_thermal_governor.dart';
 export 'src/vr_world_navigation_scope.dart';
 export 'src/vr_input_session_scope.dart';
 export 'src/vr_controller_feedback.dart';
+export 'src/vr_controller_feedback_visuals.dart';
 export 'src/vr_zenith_recenter.dart';
 export 'src/streaming/vr_scene_region.dart';
+export 'src/streaming/vr_distance_band.dart';
 export 'src/openxr/vr_gpu_external_render_target.dart';
 export 'src/openxr/vr_openxr_swapchain_bridge.dart';
 export 'src/openxr/vr_openxr_native_bridge.dart';
@@ -141,5 +149,16 @@ export 'package:vrlizate_widgets/vrlizate_widgets.dart'
         VrWordsphereConstants,
         VrWordspherePlane,
         VrWordsphereSessionController,
+        VrRow3D,
+        VrColumn3D,
+        VrGrid3D,
+        VrCard3D,
+        VrChip3D,
+        VrDialog3D,
+        VrIconButton3D,
+        VrListTile3D,
+        VrSwitch3D,
+        VrPlacementMode,
+        VrWidgetConstants,
         controlMaterial,
         VrControlMeshBuilder;

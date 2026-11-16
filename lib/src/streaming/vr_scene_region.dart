@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter_scene/scene.dart' show Node;
 import 'package:vector_math/vector_math.dart' show Vector3;
 
+import 'vr_distance_band.dart';
+
 /// An axis-aligned region in the current local world frame, in meters.
 ///
 /// Distance is measured to the closest point of the region, not its center:
@@ -93,12 +95,27 @@ class VrSceneRegionPolicy {
         'for hysteresis between detail, proxy, and retention.',
       );
     }
+    _detailBand = VrDistanceBand(
+      distanceMeters: detailDistance,
+      exitMarginMeters: hysteresis,
+    );
+    _proxyBand = VrDistanceBand(
+      distanceMeters: proxyDistance,
+      exitMarginMeters: hysteresis,
+    );
+    _retentionBand = VrDistanceBand(
+      distanceMeters: retentionDistance,
+      exitMarginMeters: hysteresis,
+    );
   }
 
   final double detailDistance;
   final double proxyDistance;
   final double retentionDistance;
   final double hysteresis;
+  late final VrDistanceBand _detailBand;
+  late final VrDistanceBand _proxyBand;
+  late final VrDistanceBand _retentionBand;
 
   VrSceneRegionDecision select(
     double distance, {
@@ -107,21 +124,24 @@ class VrSceneRegionPolicy {
     if (distance.isNaN || distance < 0) {
       throw ArgumentError.value(distance, 'distance', 'Must be nonnegative.');
     }
-    final keep =
-        distance <=
-        retentionDistance + (previous.keepResident ? hysteresis : 0);
+    final keep = _retentionBand.contains(
+      distance,
+      wasInside: previous.keepResident,
+    );
     if (!keep) return VrSceneRegionDecision.inactive;
-    if (distance <=
-        detailDistance +
-            (previous.visual == VrSceneRegionVisual.detail ? hysteresis : 0)) {
+    if (_detailBand.contains(
+      distance,
+      wasInside: previous.visual == VrSceneRegionVisual.detail,
+    )) {
       return const VrSceneRegionDecision(
         visual: VrSceneRegionVisual.detail,
         keepResident: true,
       );
     }
-    if (distance <=
-        proxyDistance +
-            (previous.visual != VrSceneRegionVisual.none ? hysteresis : 0)) {
+    if (_proxyBand.contains(
+      distance,
+      wasInside: previous.visual != VrSceneRegionVisual.none,
+    )) {
       return const VrSceneRegionDecision(
         visual: VrSceneRegionVisual.proxy,
         keepResident: true,

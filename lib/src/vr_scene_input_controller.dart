@@ -229,6 +229,7 @@ class VrSceneInputController {
       forward: rig.forward,
       screenRight: rig.screenRight,
       dt: step,
+      speed: rig.locomotionSpeed,
       movementX: movement.movementX,
       movementY: movement.movementY,
     );

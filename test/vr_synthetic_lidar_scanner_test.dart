@@ -193,5 +193,57 @@ void main() {
       expect(rightWallProj!.dx, closeTo(viewport.width * 0.5, 2.0));
       expect(rightWallProj.dy, closeTo(viewport.height * 0.5, 2.0));
     });
+
+    test('enforces maxVoxels, maxReconstructedObjects, maxReconstructedContours, and voxelTtlMicros budgets (A10)', () {
+      final scanner = VrSyntheticLidarScanner(
+        voxelSizeMeters: 0.15,
+        maxVoxels: 8,
+        maxReconstructedObjects: 4,
+        maxReconstructedContours: 5,
+        voxelTtlMicros: 1000000, // 1.0 s TTL
+      );
+      expect(scanner.isHeuristicEstimate, isTrue);
+
+      for (var i = 0; i < 25; i++) {
+        scanner.ingestVisualDepthPoint(
+          worldPosition: Vector3(i * 1.0, 1.2, -2.0),
+          normal: Vector3(0.0, 0.0, 1.0),
+          timestampMicros: 100000 + i * 10000,
+        );
+        scanner.ingestDualPhoneRfSample(
+          sample: VrRfRadioBeaconSample(
+            beaconId: 'beacon_$i',
+            label: 'Beacon $i',
+            modality: VrSensingModality.bluetoothBleRadar,
+            visorRssiDbm: -60.0,
+            joystickRssiDbm: -62.0,
+          ),
+          visorPosition: Vector3(i * 2.0, 1.6, 0.0),
+          visorForward: Vector3(0.0, 0.0, -1.0),
+          joystickPosition: Vector3(i * 2.0, 1.1, -0.25),
+          timestampMicros: 100000 + i * 10000,
+        );
+        scanner.ingestAcousticSonarEcho(
+          echo: const VrAcousticSonarEcho(
+            roundTripSeconds: 4.0 / 343.0,
+            reflectionAmplitude: 0.85,
+          ),
+          sensorPosition: Vector3(i * 2.0, 1.5, 0.0),
+          sensorForward: Vector3(0.0, 0.0, -1.0),
+          timestampMicros: 100000 + i * 10000,
+        );
+      }
+
+      expect(scanner.voxelCount, lessThanOrEqualTo(8));
+      expect(scanner.reconstructedObjects.length, lessThanOrEqualTo(4));
+      expect(scanner.reconstructedContours.length, lessThanOrEqualTo(5));
+
+      // Advance clock past 1.0s TTL -> all expired voxels, objects, and contours are evicted
+      final evicted = scanner.pruneExpired(nowMicros: 5000000);
+      expect(evicted, greaterThan(0));
+      expect(scanner.voxelCount, 0);
+      expect(scanner.reconstructedObjects, isEmpty);
+      expect(scanner.reconstructedContours, isEmpty);
+    });
   });
 }
