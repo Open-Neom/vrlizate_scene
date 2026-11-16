@@ -61,6 +61,7 @@ export 'src/retained_scene_adapter.dart';
 export 'src/retained_desktop_input.dart';
 export 'src/retained_demo_scene_view.dart';
 export 'src/lathe_geometry.dart';
+export 'src/vr_sculpted_geometry.dart';
 export 'src/vr_mesh_tangents.dart';
 export 'src/vr_scene_mesh_batch.dart';
 export 'src/vr_scene_material_cache.dart';
@@ -160,5 +161,7 @@ export 'package:vrlizate_widgets/vrlizate_widgets.dart'
         VrSwitch3D,
         VrPlacementMode,
         VrWidgetConstants,
+        VrBeveledBoxArrays,
+        VrBeveledBoxGeometry,
         controlMaterial,
         VrControlMeshBuilder;

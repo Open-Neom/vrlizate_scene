@@ -45,6 +45,22 @@ enum PbrSurface {
 
   /// Loose sand with wind ripples.
   sand,
+
+  /// Industrial sci-fi floor grating with beveled border ribs, recessed
+  /// ventilation slots (AO-darkened), and diamond tread micro-relief.
+  sciFiGrating,
+
+  /// Modular sci-fi bulkhead panels with 45°-chamfered seams, panel sub-bays,
+  /// brushed anodized metallic finish, and recessed fastener dimples.
+  techPanels,
+
+  /// Woven hexagonal carbon-composite armor with alternating anisotropic
+  /// roughness and subtle hex-cell bevel relief.
+  carbonHex,
+
+  /// Banded gas-giant atmosphere with latitudinal jet streams, Kelvin-Helmholtz
+  /// shear eddies, and cyclonic storm ovals.
+  gasGiantBands,
 }
 
 /// Everything a generator needs, in plain values so it crosses isolates.
@@ -133,6 +149,14 @@ abstract final class PbrTextureSynth {
         _plaster(field);
       case PbrSurface.sand:
         _sand(field);
+      case PbrSurface.sciFiGrating:
+        _sciFiGrating(field);
+      case PbrSurface.techPanels:
+        _techPanels(field);
+      case PbrSurface.carbonHex:
+        _carbonHex(field);
+      case PbrSurface.gasGiantBands:
+        _gasGiantBands(field);
     }
     return PbrTextureSet(
       size: n,
@@ -452,6 +476,216 @@ abstract final class PbrTextureSynth {
       ).scaled(0.95 + 0.1 * grains);
       px.roughness = 0.92 + 0.08 * grains;
       px.ao = (0.78 + 0.22 * ripples).clamp(0.74, 1.0);
+    });
+  }
+
+  static void _sciFiGrating(_Field f) {
+    final r = f.request;
+    final cells = 2 * r.repeats;
+    final metal = _Rgb.of(r.primary);
+    final recess = _Rgb.of(r.secondary);
+    f.each((u, v, px) {
+      final cu = u * cells - (u * cells).floor();
+      final cv = v * cells - (v * cells).floor();
+      final frameDist = math.min(
+        math.min(cu, 1.0 - cu),
+        math.min(cv, 1.0 - cv),
+      );
+      final crossRibDist = math.min((cu - 0.5).abs(), (cv - 0.5).abs());
+      final wear = f.fbm(u, v, octaves: 3, cells: 8 * r.repeats);
+
+      // Outer structural frame or central cross-rib:
+      if (frameDist < 0.11 || crossRibDist < 0.055) {
+        final bevel = frameDist < 0.11
+            ? _smoothstep(0.015, 0.055, frameDist)
+            : _smoothstep(0.008, 0.032, crossRibDist);
+        // Subtle diamond tread bumps along structural frame:
+        final treadPhaseU = math.sin(u * cells * 16.0 * math.pi).abs();
+        final treadPhaseV = math.sin(v * cells * 16.0 * math.pi).abs();
+        final tread = _smoothstep(0.62, 0.92, treadPhaseU * treadPhaseV);
+        px.height = 0.68 + 0.22 * bevel + 0.08 * tread + 0.02 * (wear - 0.5);
+        px.albedo = metal.scaled(0.88 + 0.18 * bevel + 0.08 * tread);
+        px.metallic = 0.92;
+        px.roughness = (0.34 + 0.20 * (1.0 - tread) + 0.10 * wear).clamp(
+          0.18,
+          0.75,
+        );
+        px.ao = 0.80 + 0.20 * bevel;
+        return;
+      }
+
+      // Recessed louver / slot grid inside each sub-quadrant:
+      final slotPhase = 0.5 + 0.5 * math.cos(cv * 12.0 * 2.0 * math.pi);
+      final barMask = _smoothstep(0.32, 0.68, slotPhase);
+      px.height = 0.08 + 0.44 * barMask;
+      px.albedo = _Rgb.lerp(recess.scaled(0.45), metal.scaled(0.76), barMask);
+      px.metallic = 0.35 + 0.55 * barMask;
+      px.roughness = 0.78 - 0.34 * barMask + 0.08 * wear;
+      px.ao = 0.32 + 0.52 * barMask;
+    });
+  }
+
+  static void _techPanels(_Field f) {
+    final r = f.request;
+    final bays = 2 * r.repeats;
+    final armor = _Rgb.of(r.primary);
+    final groove = _Rgb.of(r.secondary);
+    f.each((u, v, px) {
+      final bx = (u * bays).floor();
+      final by = (v * bays).floor();
+      final pu = u * bays - bx;
+      final pv = v * bays - by;
+
+      final du = math.min(pu, 1.0 - pu);
+      final dv = math.min(pv, 1.0 - pv);
+      final edge = math.min(du, dv);
+
+      // Asymmetric sub-panel seam inside each bay for architectural interest:
+      final splitU = 0.35 + 0.30 * f.hash(bx, by, 41);
+      final hasSubSplit = f.hash(bx, by, 43) > 0.30;
+      final subDist = hasSubSplit && pv > 0.18 && pv < 0.82
+          ? (pu - splitU).abs()
+          : 1.0;
+
+      final seamDist = math.min(edge, subDist);
+      final brushed = f.fbm(u, v * 0.25, octaves: 3, cells: 24 * r.repeats);
+      final grain = f.fbm(u, v, octaves: 4, cells: 6 * r.repeats);
+      final bayTint = 0.90 + 0.18 * f.hash(bx + by * 19, 7, 53);
+
+      // Corner fastener dimples:
+      const inset = 0.085;
+      const rad = 0.024;
+      var dimple = 0.0;
+      for (final cx in const [inset, 1.0 - inset]) {
+        for (final cy in const [inset, 1.0 - inset]) {
+          final d = math.sqrt((pu - cx) * (pu - cx) + (pv - cy) * (pv - cy));
+          if (d < rad) {
+            dimple = 1.0 - (d / rad);
+          }
+        }
+      }
+
+      if (seamDist < 0.022) {
+        px.height = 0.10;
+        px.albedo = groove.scaled(0.58);
+        px.metallic = 0.72;
+        px.roughness = 0.68;
+        px.ao = 0.42;
+      } else {
+        final chamfer = _smoothstep(0.022, 0.068, seamDist);
+        px.height =
+            (0.22 + 0.68 * chamfer - 0.26 * dimple + 0.05 * (brushed - 0.5))
+                .clamp(0.05, 1.0);
+        px.albedo = _Rgb.lerp(
+          groove,
+          armor,
+          0.25 + 0.75 * chamfer,
+        ).scaled(bayTint * (0.94 + 0.12 * brushed));
+        px.metallic = 0.86;
+        px.roughness = (0.28 + 0.18 * grain + 0.14 * (1.0 - chamfer)).clamp(
+          0.16,
+          0.68,
+        );
+        px.ao = (0.64 + 0.36 * chamfer - 0.18 * dimple).clamp(0.45, 1.0);
+      }
+    });
+  }
+
+  static void _carbonHex(_Field f) {
+    final r = f.request;
+    final cols = 6 * r.repeats;
+    final rows = 6 * r.repeats;
+    final hi = _Rgb.of(r.primary);
+    final lo = _Rgb.of(r.secondary);
+    f.each((u, v, px) {
+      // Seamless staggered brick/hex-cell lattice with integer periodic wrap:
+      final gx = u * cols;
+      final gy = v * rows;
+      var best = 1e9;
+      var second = 1e9;
+      var cellParity = 0;
+      final ix = gx.floor();
+      final iy = gy.floor();
+      for (var dy = -1; dy <= 1; dy++) {
+        final ry = iy + dy;
+        final wy = ((ry % rows) + rows) % rows;
+        final shift = (wy.isOdd) ? 0.5 : 0.0;
+        for (var dx = -1; dx <= 1; dx++) {
+          final rx = ix + dx;
+          final wx = ((rx % cols) + cols) % cols;
+          final sx = rx + 0.5 + shift - (rx + shift >= cols ? 0.0 : 0.0);
+          final sy = ry + 0.5;
+          final ddx = gx - sx;
+          final ddy = (gy - sy) * 0.88;
+          final d2 = ddx * ddx + ddy * ddy;
+          if (d2 < best) {
+            second = best;
+            best = d2;
+            cellParity = (wx + wy) & 1;
+          } else if (d2 < second) {
+            second = d2;
+          }
+        }
+      }
+      final border = math.sqrt(second) - math.sqrt(best);
+      final bevel = _smoothstep(0.03, 0.16, border);
+      final weaveAngle = cellParity == 0 ? (u + v) : (u - v + 1.0);
+      final microWeave =
+          0.5 + 0.5 * math.cos(weaveAngle * cols * 4.0 * 2.0 * math.pi);
+      px.height = 0.20 + 0.62 * bevel + 0.12 * microWeave;
+      px.albedo = _Rgb.lerp(
+        lo,
+        hi,
+        (0.35 + 0.45 * bevel + 0.20 * microWeave) *
+            (cellParity == 0 ? 1.0 : 0.88),
+      );
+      px.metallic = 0.55 + 0.25 * bevel;
+      px.roughness = cellParity == 0
+          ? (0.22 + 0.14 * (1.0 - microWeave))
+          : (0.36 + 0.14 * microWeave);
+      px.ao = 0.55 + 0.45 * bevel;
+    });
+  }
+
+  static void _gasGiantBands(_Field f) {
+    final r = f.request;
+    final zoneColor = _Rgb.of(r.primary);
+    final beltColor = _Rgb.of(r.secondary);
+    f.each((u, v, px) {
+      // Periodic Kelvin-Helmholtz shear turbulence along latitude `v`:
+      final macroShear = f.fbm(u, v, octaves: 4, cells: 3 * r.repeats);
+      final eddy = f.fbm(u * 2.0, v, octaves: 3, cells: 8 * r.repeats);
+      final latWarp =
+          v +
+          0.045 * math.sin(u * 2.0 * math.pi * r.repeats + macroShear * 5.0) +
+          0.025 * (eddy - 0.5);
+
+      final band1 = 0.5 + 0.5 * math.cos(latWarp * 6.0 * 2.0 * math.pi * r.repeats);
+      final band2 = 0.5 + 0.5 * math.sin(latWarp * 11.0 * 2.0 * math.pi * r.repeats);
+      var mix = (0.65 * band1 + 0.35 * band2).clamp(0.0, 1.0);
+
+      // Anticyclonic storm oval (Great Red/Blue Spot analog) centered cleanly inside tile:
+      final su = ((u - 0.62 + 1.5) % 1.0) - 0.5;
+      final sv = v - 0.58;
+      final ovalDist = math.sqrt((su * su) / (0.11 * 0.11) + (sv * sv) / (0.055 * 0.055));
+      if (ovalDist < 1.0) {
+        final swirl = 0.5 + 0.5 * math.cos((1.0 - ovalDist) * 4.0 * math.pi);
+        final weight = _smoothstep(1.0, 0.2, ovalDist);
+        mix = (mix * (1.0 - weight) + (0.25 + 0.65 * swirl) * weight).clamp(
+          0.0,
+          1.0,
+        );
+      }
+
+      px.height = 0.42 + 0.32 * mix + 0.14 * eddy;
+      px.albedo = _Rgb.lerp(
+        beltColor,
+        zoneColor,
+        mix,
+      ).scaled(0.92 + 0.14 * eddy);
+      px.metallic = 0.0;
+      px.roughness = 0.68 + 0.20 * (1.0 - mix);
+      px.ao = 0.88 + 0.12 * mix;
     });
   }
 

@@ -9,6 +9,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import 'retained_scene_adapter.dart';
 import 'stereo_head_rig.dart';
 import 'vr_controller_feedback.dart';
+import 'vr_sculpted_geometry.dart';
 
 /// CPU-testable resource boundary; production uses retained unit GPU meshes.
 typedef VrControllerFeedbackMeshBuilder =
@@ -275,8 +276,12 @@ class VrControllerFeedbackVisuals {
 
   Mesh _gpuMesh(UnlitMaterial material, {required bool round}) => Mesh(
     round
-        ? (_sphere ??= SphereGeometry(radius: .5, segments: 16, rings: 8))
-        : (_box ??= CuboidGeometry(vm.Vector3.all(1))),
+        ? (_sphere ??= SphereGeometry(radius: .5, segments: 20, rings: 10))
+        : (_box ??= VrSculptedGeometry.beveledBox(
+            vm.Vector3.all(1),
+            cornerRadius: 0.11,
+            bevelZ: 0.14,
+          )),
     material,
   );
 
