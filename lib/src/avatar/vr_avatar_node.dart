@@ -219,7 +219,7 @@ class VrAvatarNode {
     _sway.localTransform = vm.Matrix4.identity();
     for (final entry in _groupParts().entries) {
       final mesh = fs.InstancedMesh(
-        geometry: _AvatarGeometryCache.geometry(entry.key.$1, _detail),
+        geometry: VrAvatarGeometryCache.geometry(entry.key.$1, _detail),
         material: _materials[entry.key.$2]!,
         // An avatar is a compact group: aggregate culling avoids per-piece
         // frustum tests; each batch still has correct transformed bounds.
@@ -257,8 +257,8 @@ class VrAvatarNode {
 
   void _updateMaterials() {
     final species = _appearance.species;
-    final body = _linearArgb(_appearance.bodyColorArgb);
-    final accent = _linearArgb(_appearance.accentColorArgb);
+    final body = vrAvatarLinearArgb(_appearance.bodyColorArgb);
+    final accent = vrAvatarLinearArgb(_appearance.accentColorArgb);
     final deepTint = vm.Vector4(.014, .026, .042, 1);
     final shadeColor = vm.Vector4(
       body.x * .66 + deepTint.x * .34,
@@ -341,7 +341,7 @@ class _AvatarBatch {
   List<VrAvatarPart> parts;
 }
 
-class _AvatarGeometryCache {
+class VrAvatarGeometryCache {
   static final _geometries = <(VrAvatarShape, VrAvatarDetail), fs.Geometry>{};
 
   static fs.Geometry geometry(VrAvatarShape shape, VrAvatarDetail detail) =>
@@ -363,7 +363,7 @@ class _AvatarGeometryCache {
       });
 }
 
-vm.Vector4 _linearArgb(int argb) {
+vm.Vector4 vrAvatarLinearArgb(int argb) {
   double channel(int shift) {
     final srgb = ((argb >> shift) & 255) / 255;
     return srgb <= .04045

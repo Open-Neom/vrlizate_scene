@@ -26,6 +26,7 @@ export 'domain/services/vr_scene_transition_controller.dart';
 export 'domain/services/vr_spatial_capture_scheduler.dart';
 export 'domain/services/vr_synthetic_lidar_scanner.dart';
 export 'src/avatar/vr_avatar_node.dart';
+export 'src/avatar/vr_peer_avatar_stage.dart';
 export 'src/animation/vr_actor_animation.dart';
 export 'src/animation/vr_exploded_scene_rig.dart';
 export 'src/animation/vr_limb_kinematics.dart';
