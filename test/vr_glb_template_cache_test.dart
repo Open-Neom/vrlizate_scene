@@ -7,7 +7,8 @@ import 'package:flutter_scene/src/animation.dart'
     show AnimationChannel, BindKey, PropertyResolver;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
-import 'package:vrlizate_scene/vrlizate_scene.dart';
+import 'package:vrlizate_scene/src/animation/vr_actor_animation.dart';
+import 'package:vrlizate_scene/src/assets/vr_glb_template_cache.dart';
 
 // No buffers or shaders are needed to verify resource identity across clones.
 class _CpuGeometry extends fs.Geometry {
@@ -222,8 +223,18 @@ void main() {
     );
     addTearDown(cache.dispose);
     await expectLater(cache.instantiate(' '), throwsArgumentError);
+    await expectLater(cache.instantiate('../secret.glb'), throwsArgumentError);
+    await expectLater(cache.instantiate('/etc/passwd'), throwsArgumentError);
+    await expectLater(
+      cache.instantiate('https://evil.example/a.glb'),
+      throwsArgumentError,
+    );
     await expectLater(
       cache.instantiate('a.glb', maxTextureSize: 0),
+      throwsArgumentError,
+    );
+    await expectLater(
+      cache.instantiate('a.glb', maxTextureSize: 32768),
       throwsArgumentError,
     );
     expect(calls, 0);

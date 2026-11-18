@@ -20,9 +20,18 @@ typedef VrGlbTemplateLoader =
 /// instances keep their resources. This cache belongs to a world/session and
 /// should be disposed with it, rather than retained globally without a limit.
 final class VrGlbTemplateCache {
+  static final RegExp _unsafeAssetChars = RegExp(
+    r'[\x00-\x1F\x7F-\x9F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\\]',
+  );
+
+  static Future<fs.Node> _defaultLoader(
+    String assetPath, {
+    int? maxTextureSize,
+  }) => fs.Node.fromGlbAsset(assetPath);
+
   VrGlbTemplateCache({this.maxEntries = 4, VrGlbTemplateLoader? loader})
-    : _loader = loader ?? fs.Node.fromGlbAsset {
-    if (maxEntries < 1) {
+    : _loader = loader ?? _defaultLoader {
+    if (!maxEntries.isFinite || maxEntries < 1) {
       throw ArgumentError.value(maxEntries, 'maxEntries', 'Must be positive.');
     }
   }
@@ -43,14 +52,34 @@ final class VrGlbTemplateCache {
 
   Future<fs.Node> instantiate(String assetPath, {int? maxTextureSize}) async {
     _checkAlive();
-    if (assetPath.trim().isEmpty) {
-      throw ArgumentError.value(assetPath, 'assetPath', 'Must not be empty.');
+    final lowerAsset = assetPath.toLowerCase();
+    final segments = assetPath.split('/');
+    if (assetPath.trim().isEmpty ||
+        assetPath != assetPath.trim() ||
+        assetPath.length > 512 ||
+        assetPath.startsWith('/') ||
+        assetPath.contains('://') ||
+        lowerAsset.contains('%2e') ||
+        lowerAsset.contains('%2f') ||
+        lowerAsset.contains('%5c') ||
+        _unsafeAssetChars.hasMatch(assetPath) ||
+        segments.contains('..') ||
+        segments.contains('.') ||
+        segments.any((s) => s.isEmpty)) {
+      throw ArgumentError.value(
+        assetPath,
+        'assetPath',
+        'Must be a safe relative Flutter asset path.',
+      );
     }
-    if (maxTextureSize != null && maxTextureSize < 1) {
+    if (maxTextureSize != null &&
+        (!maxTextureSize.isFinite ||
+            maxTextureSize < 1 ||
+            maxTextureSize > 16384)) {
       throw ArgumentError.value(
         maxTextureSize,
         'maxTextureSize',
-        'Must be positive when provided.',
+        'Must be between 1 and 16384 when provided.',
       );
     }
     final key = (assetPath: assetPath, maxTextureSize: maxTextureSize);

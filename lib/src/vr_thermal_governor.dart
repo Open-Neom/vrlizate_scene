@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'quality_preset.dart';
 
@@ -48,12 +49,23 @@ class VrThermalGovernor {
 
   VrThermalGovernor({
     VrQualityPreset initialPreset = VrQualityPreset.high,
-    this.targetFps = 60.0,
+    double targetFps = 60.0,
     double? stepDownThresholdFps,
     double? stepUpThresholdFps,
-  })  : _currentPreset = initialPreset,
-        stepDownThresholdFps = stepDownThresholdFps ?? 54.0,
-        stepUpThresholdFps = stepUpThresholdFps ?? 58.5;
+  }) : _currentPreset = initialPreset,
+       targetFps = (targetFps.isFinite && targetFps > 0.0) ? targetFps : 60.0,
+       stepDownThresholdFps =
+           (stepDownThresholdFps != null &&
+               stepDownThresholdFps.isFinite &&
+               stepDownThresholdFps > 0.0)
+           ? stepDownThresholdFps
+           : 54.0,
+       stepUpThresholdFps =
+           (stepUpThresholdFps != null &&
+               stepUpThresholdFps.isFinite &&
+               stepUpThresholdFps > 0.0)
+           ? stepUpThresholdFps
+           : 58.5;
 
   VrQualityPreset get currentPreset => _currentPreset;
   set currentPreset(VrQualityPreset preset) => _currentPreset = preset;
@@ -73,14 +85,17 @@ class VrThermalGovernor {
   ///
   /// Returns the newly determined [VrQualityPreset] (or unchanged if stable).
   VrQualityPreset recordFrame(double frameDtSeconds) {
-    if (frameDtSeconds > 0.0 && frameDtSeconds < 0.5) {
+    if (!frameDtSeconds.isFinite || frameDtSeconds <= 0.0) {
+      return _currentPreset;
+    }
+    if (frameDtSeconds < 0.5) {
       _frameTimes.add(frameDtSeconds);
       if (_frameTimes.length > _sampleWindowSize) {
         _frameTimes.removeAt(0);
       }
     }
 
-    _secondsSinceLastCheck += frameDtSeconds;
+    _secondsSinceLastCheck += math.min(frameDtSeconds, 1.0);
 
     if (_secondsSinceLastCheck >= _evaluationIntervalSeconds) {
       _secondsSinceLastCheck = 0.0;
@@ -99,13 +114,17 @@ class VrThermalGovernor {
 
           if (prev != next) {
             _currentPreset = next;
-            final event = VrThermalEvent(
-              previousPreset: prev,
-              newPreset: next,
-              currentFps: fps,
-              reason: 'Prevención de sobrecalentamiento por baja de FPS prolongada',
-            );
-            _eventController.add(event);
+            if (!_eventController.isClosed) {
+              _eventController.add(
+                VrThermalEvent(
+                  previousPreset: prev,
+                  newPreset: next,
+                  currentFps: fps,
+                  reason:
+                      'Prevención de sobrecalentamiento por baja de FPS prolongada',
+                ),
+              );
+            }
           }
         }
       } else if (fps >= stepUpThresholdFps) {
@@ -120,13 +139,16 @@ class VrThermalGovernor {
 
           if (prev != next) {
             _currentPreset = next;
-            final event = VrThermalEvent(
-              previousPreset: prev,
-              newPreset: next,
-              currentFps: fps,
-              reason: 'Recuperación térmica y estabilidad de tasa de refresco',
-            );
-            _eventController.add(event);
+            if (!_eventController.isClosed) {
+              _eventController.add(
+                VrThermalEvent(
+                  previousPreset: prev,
+                  newPreset: next,
+                  currentFps: fps,
+                  reason: 'Recuperación térmica y estabilidad de tasa de refresco',
+                ),
+              );
+            }
           }
         }
       } else {
@@ -140,6 +162,8 @@ class VrThermalGovernor {
   }
 
   void dispose() {
-    _eventController.close();
+    if (!_eventController.isClosed) {
+      _eventController.close();
+    }
   }
 }

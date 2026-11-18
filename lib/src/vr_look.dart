@@ -165,28 +165,49 @@ class VrLook {
     if (toneMapping == ToneMappingMode.agx) {
       s.agxContrast = 1.26;
     }
-    s.exposure = exposure;
+    s.exposure = (exposure.isFinite && exposure >= 0.0) ? exposure : 1.0;
 
-    final grading = saturation != 1.0 || contrast != 1.0;
+    final safeSat =
+        (saturation.isFinite && saturation >= 0.0) ? saturation : 1.0;
+    final safeCon = (contrast.isFinite && contrast >= 0.0) ? contrast : 1.0;
+    final grading = safeSat != 1.0 || safeCon != 1.0;
     s.colorGradingEnabled = grading;
     if (grading) {
-      s.saturation = saturation;
-      s.contrast = contrast;
+      s.saturation = safeSat;
+      s.contrast = safeCon;
     }
 
-    final bloom = preset.bloomEnabled && bloomIntensity > 0.0;
+    final safeBloom =
+        (bloomIntensity.isFinite && bloomIntensity > 0.0) ? bloomIntensity : 0.0;
+    final safeBloomThresh =
+        (bloomThreshold.isFinite && bloomThreshold >= 0.0)
+            ? bloomThreshold
+            : 1.0;
+    final bloom = preset.bloomEnabled && safeBloom > 0.0;
     s.bloomEnabled = bloom;
     if (bloom) {
-      s.bloomIntensity = bloomIntensity;
-      s.bloomThreshold = bloomThreshold;
+      s.bloomIntensity = safeBloom;
+      s.bloomThreshold = safeBloomThresh;
       s.bloomScatter = 0.72;
     }
 
-    final vignette = vignetteIntensity > 0.0;
+    final safeVignette =
+        (vignetteIntensity.isFinite && vignetteIntensity > 0.0)
+            ? vignetteIntensity.clamp(0.0, 1.0)
+            : 0.0;
+    final vignette = safeVignette > 0.0;
     s.vignetteEnabled = vignette;
-    if (vignette) s.vignetteIntensity = vignetteIntensity;
+    if (vignette) s.vignetteIntensity = safeVignette;
 
-    final fog = fogColor != null && fogVisibilityMeters > 0.0;
+    final validFogColor =
+        fogColor != null &&
+        fogColor!.x.isFinite &&
+        fogColor!.y.isFinite &&
+        fogColor!.z.isFinite;
+    final fog =
+        validFogColor &&
+        fogVisibilityMeters.isFinite &&
+        fogVisibilityMeters > 0.0;
     s.fogEnabled = fog;
     if (fog) {
       s.fogMode = FogMode.exponential;

@@ -16,9 +16,14 @@ class VrFrameQualityPolicy {
     this.requiredSlowWindows = 2,
     this.slowFrameFraction = 0.2,
   }) : _targetRefreshRateHz = _validateRate(targetRefreshRateHz) {
-    if (warmupFrames < 0 || windowFrames < 1 || requiredSlowWindows < 1) {
+    if (!warmupFrames.isFinite ||
+        !windowFrames.isFinite ||
+        !requiredSlowWindows.isFinite ||
+        warmupFrames < 0 ||
+        windowFrames < 1 ||
+        requiredSlowWindows < 1) {
       throw ArgumentError(
-        'Frame counts must be positive (warmup may be zero).',
+        'Frame counts must be finite and positive (warmup may be zero).',
       );
     }
     if (!slowFrameFraction.isFinite ||
@@ -72,7 +77,12 @@ class VrFrameQualityPolicy {
     required int buildMicroseconds,
     required int rasterMicroseconds,
   }) {
-    if (buildMicroseconds < 0 || rasterMicroseconds < 0) return false;
+    if (!buildMicroseconds.isFinite ||
+        !rasterMicroseconds.isFinite ||
+        buildMicroseconds < 0 ||
+        rasterMicroseconds < 0) {
+      return false;
+    }
     if (_warmupSamples < warmupFrames) {
       _warmupSamples++;
       return false;
