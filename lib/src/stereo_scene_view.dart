@@ -58,6 +58,11 @@ import 'openxr/vr_openxr_swapchain_bridge.dart';
 ///
 /// Only nodes with a non-empty `Node.name` are gaze-interactive.
 class StereoSceneView extends StatefulWidget {
+  /// Optional host hook fired whenever dynamic scaling steps down visual
+  /// quality (or remains under pressure at [VrQualityTier.low]), allowing
+  /// background co-processors (such as on-device AI weights) to evict RAM.
+  static void Function(VrQualityPreset nextPreset)? onGlobalQualityStepDown;
+
   const StereoSceneView({
     super.key,
     required this.scene,
@@ -1233,8 +1238,13 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   void _reduceQuality() {
     final preset = _preset;
     if (!mounted || !view.dynamicScaling || preset == null) return;
-    if (preset.tier == VrQualityTier.low) return;
-    setState(() => _applyPreset(preset.stepDown));
+    if (preset.tier == VrQualityTier.low) {
+      StereoSceneView.onGlobalQualityStepDown?.call(preset);
+      return;
+    }
+    final next = preset.stepDown;
+    setState(() => _applyPreset(next));
+    StereoSceneView.onGlobalQualityStepDown?.call(next);
   }
 
   void _recoverQuality() {

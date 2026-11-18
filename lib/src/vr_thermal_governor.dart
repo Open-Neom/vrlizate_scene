@@ -29,6 +29,10 @@ class VrThermalEvent {
 /// Continuously monitors frame time and rolling FPS to prevent thermal throttling
 /// and battery drain on mobile SoCs by dynamically scaling down quality tiers.
 class VrThermalGovernor {
+  /// Optional global listener notified on every thermal step-down event so
+  /// host memory schedulers can evict heavy caches alongside GPU downscaling.
+  static void Function(VrThermalEvent event)? onGlobalThermalEvent;
+
   VrQualityPreset _currentPreset;
   final double targetFps;
   final double stepDownThresholdFps;
@@ -114,16 +118,16 @@ class VrThermalGovernor {
 
           if (prev != next) {
             _currentPreset = next;
+            final event = VrThermalEvent(
+              previousPreset: prev,
+              newPreset: next,
+              currentFps: fps,
+              reason:
+                  'Prevención de sobrecalentamiento por baja de FPS prolongada',
+            );
+            onGlobalThermalEvent?.call(event);
             if (!_eventController.isClosed) {
-              _eventController.add(
-                VrThermalEvent(
-                  previousPreset: prev,
-                  newPreset: next,
-                  currentFps: fps,
-                  reason:
-                      'Prevención de sobrecalentamiento por baja de FPS prolongada',
-                ),
-              );
+              _eventController.add(event);
             }
           }
         }
