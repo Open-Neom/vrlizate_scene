@@ -40,6 +40,8 @@ import 'vr_scene_home_control_lifecycle.dart';
 import 'vr_stereo_scene_layers.dart';
 import 'vr_lens_warp_post_process.dart';
 import 'vr_sgsr_upscale_post_process.dart';
+import 'vr_graphics_comfort_settings.dart';
+import 'stereo_hud_overlay.dart';
 import 'vr_predictive_motion_culler.dart';
 import 'vr_scene_pointer_interaction.dart';
 import 'vr_viewer_profile.dart';
@@ -367,6 +369,12 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   }
   final ValueNotifier<double> _dwellProgress = ValueNotifier(0);
   final ValueNotifier<double> _zenithProgress = ValueNotifier(0);
+  final ValueNotifier<double> _comfortVignetteAlpha = ValueNotifier(0);
+  double _lastMotionYaw = 0.0;
+  final vm.Vector3 _lastMotionEye = vm.Vector3.zero();
+  bool _hasMotionSample = false;
+  int _perfFrameCount = 0;
+  double _perfAccumSec = 0.0;
   final VrZenithRecenterDetector _zenith = VrZenithRecenterDetector();
 
   InertialTapDetector? _tapDetector;
@@ -501,6 +509,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
       _handRig = SimulatedHandVisuals(view.scene.root, view.handGlowColor);
     }
     vrHandheldConsoleMode.addListener(_onDisplayModeChanged);
+    VrGraphicsComfortSettings.instance.addListener(_onGraphicsSettingsChanged);
     _enforceImmersiveLandscape();
   }
 
@@ -527,6 +536,34 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   void _onDisplayModeChanged() {
     if (!mounted) return;
     _enforceImmersiveLandscape();
+    _syncSpatialTracking();
+    final base = _requestedPreset ?? _preset;
+    if (base != null) {
+      final resolved = VrGraphicsComfortSettings.instance.resolvePreset(
+        base,
+        isHandheldMono: vrHandheldConsoleMode.value,
+      );
+      if (resolved != _preset) _applyPreset(resolved);
+    }
+    setState(() {});
+  }
+
+  void _onGraphicsSettingsChanged() {
+    if (!mounted) return;
+    final settings = VrGraphicsComfortSettings.instance;
+    if (!settings.comfortVignetteEnabled && _comfortVignetteAlpha.value != 0) {
+      _comfortVignetteAlpha.value = 0.0;
+    }
+    final base = _requestedPreset ?? _preset;
+    if (base != null) {
+      final resolved = settings.resolvePreset(
+        base,
+        isHandheldMono: vrHandheldConsoleMode.value,
+      );
+      if (resolved != _preset) {
+        _applyPreset(resolved);
+      }
+    }
     _syncSpatialTracking();
     setState(() {});
   }
@@ -778,7 +815,10 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     }
     _sceneActive = sceneActive;
     if (view.headTracker == null) {
-      final shouldTrackHead = sceneActive && !vrHandheldConsoleMode.value;
+      final allowGyroInHandheld =
+          VrGraphicsComfortSettings.instance.handheldGyroAimEnabled;
+      final shouldTrackHead =
+          sceneActive && (!vrHandheldConsoleMode.value || allowGyroInHandheld);
       if (shouldTrackHead &&
           !_ownedHeadTrackerStarted &&
           _headTracker.canStart) {
@@ -788,7 +828,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
         _headTracker.stop();
         _ownedHeadTrackerStarted = false;
       }
-      if (vrHandheldConsoleMode.value) {
+      if (vrHandheldConsoleMode.value && !allowGyroInHandheld) {
         _rig.setPitch(0.0);
       }
     }
@@ -833,6 +873,9 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   @override
   void dispose() {
     vrHandheldConsoleMode.removeListener(_onDisplayModeChanged);
+    VrGraphicsComfortSettings.instance.removeListener(
+      _onGraphicsSettingsChanged,
+    );
     WidgetsBinding.instance.removeObserver(this);
     _rotationTarget.spatial = null;
     final spatial = _spatial;
@@ -855,6 +898,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     if (view.headTracker == null) _headTracker.stop();
     _dwellProgress.dispose();
     _zenithProgress.dispose();
+    _comfortVignetteAlpha.dispose();
     _pointerRepaint.dispose();
     super.dispose();
   }
@@ -976,6 +1020,71 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
     final hasFeedback = _feedbackVisuals?.root.visible ?? false;
     if (hadFeedback || hasFeedback) {
       _feedbackRepaint.markDirty();
+    }
+
+    // Dynamic anti-nausea peripheral comfort vignette (stereo VR only) &
+    // optional 2 Hz live FPS telemetry when enabled in Settings.
+    final gfxSettings = VrGraphicsComfortSettings.instance;
+    final isStereo = !vrHandheldConsoleMode.value;
+    if (dt > 1e-4 && dt.isFinite) {
+      if (!_hasMotionSample) {
+        _lastMotionYaw = _rig.yaw;
+        _lastMotionEye.setFrom(_rig.eyeCenter);
+        _hasMotionSample = true;
+      } else {
+        var dyaw = (_rig.yaw - _lastMotionYaw) % (2 * pi);
+        if (dyaw > pi) dyaw -= 2 * pi;
+        if (dyaw < -pi) dyaw += 2 * pi;
+        final yawRate = dyaw.abs() / dt;
+        final dx = _rig.eyeCenter.x - _lastMotionEye.x;
+        final dz = _rig.eyeCenter.z - _lastMotionEye.z;
+        final linSpeed = sqrt(dx * dx + dz * dz) / dt;
+        _lastMotionYaw = _rig.yaw;
+        _lastMotionEye.setFrom(_rig.eyeCenter);
+
+        final targetAlpha = gfxSettings.computeComfortVignetteTarget(
+          yawRateRadPerSec: yawRate,
+          linearSpeedMetersPerSec: linSpeed,
+          isStereo: isStereo,
+        );
+        final rate = targetAlpha > _comfortVignetteAlpha.value ? 10.0 : 5.5;
+        final nextAlpha =
+            _comfortVignetteAlpha.value +
+            (targetAlpha - _comfortVignetteAlpha.value) *
+                (1.0 - exp(-rate * dt));
+        final snapped = nextAlpha < 0.008 ? 0.0 : nextAlpha;
+        if ((snapped - _comfortVignetteAlpha.value).abs() > 0.004 ||
+            (snapped == 0.0 && _comfortVignetteAlpha.value != 0.0)) {
+          _comfortVignetteAlpha.value = snapped;
+        }
+      }
+
+      if (gfxSettings.showPerformanceHud) {
+        _perfFrameCount++;
+        _perfAccumSec += dt;
+        if (_perfAccumSec >= 0.5) {
+          final fps = (_perfFrameCount / _perfAccumSec).clamp(1.0, 240.0);
+          final frameMs = 1000.0 / fps;
+          final activePreset = _preset ?? VrQualityPreset.medium;
+          final sgsrCfg =
+              view.sgsrUpscale ??
+              gfxSettings.resolveSgsrConfig(activePreset, isStereo: isStereo);
+          final effScale = (sgsrCfg.isActive && _sgsrShaderReady)
+              ? sgsrCfg.internalRenderScale
+              : 1.0;
+          gfxSettings.publishTelemetry(
+            VrLiveFrameMetrics(
+              fps: fps,
+              frameMs: frameMs,
+              tier: activePreset.tier,
+              sgsrScale: effScale,
+              isStereo: isStereo,
+            ),
+          );
+          _perfFrameCount = 0;
+          _perfAccumSec = 0.0;
+        }
+      }
     }
   }
 
@@ -1271,19 +1380,27 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
   Widget build(BuildContext context) {
     // The device catalog seeds a new scene only. Rebuilds retain any quality
     // reduction already selected by the frame monitor or an explicit override.
-    final preset =
-        _preset ??
-        VrDevicePerformanceScope.initialPresetOf(
-          context,
-          explicitQuality: view.quality,
-        );
-    if (_preset == null) {
-      _requestedPreset = preset;
-      _applyPreset(preset);
-    }
-    final dpr = MediaQuery.devicePixelRatioOf(context);
-
     final isHandheldMono = vrHandheldConsoleMode.value;
+    final gfxSettings = VrGraphicsComfortSettings.instance;
+    if (_preset == null) {
+      final seeded = VrDevicePerformanceScope.initialPresetOf(
+        context,
+        explicitQuality: view.quality,
+      );
+      _requestedPreset = seeded;
+      _applyPreset(
+        gfxSettings.resolvePreset(seeded, isHandheldMono: isHandheldMono),
+      );
+    }
+    final preset = _preset!;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final sgsrConfig =
+        view.sgsrUpscale ??
+        gfxSettings.resolveSgsrConfig(preset, isStereo: !isHandheldMono);
+    final activeSgsrScale =
+        (sgsrConfig.isActive && _sgsrShaderReady)
+        ? sgsrConfig.internalRenderScale
+        : 1.0;
 
     // Keep one stable SceneView and ticker even when the experiment is toggled.
     final scene = LayoutBuilder(
@@ -1356,25 +1473,13 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
           }
           return eyes;
         },
-        pixelRatio:
-            dpr *
-            preset.pixelRatioScale *
-            ((view.sgsrUpscale != null &&
-                    view.sgsrUpscale!.isActive &&
-                    _sgsrShaderReady)
-                ? view.sgsrUpscale!.internalRenderScale
-                : 1.0),
+        pixelRatio: dpr * preset.pixelRatioScale * activeSgsrScale,
         onTick: _tick,
       ),
     );
 
-    final sgsrConfig = view.sgsrUpscale;
-    final activeSgsrScale =
-        (sgsrConfig != null && sgsrConfig.isActive && _sgsrShaderReady)
-        ? sgsrConfig.internalRenderScale
-        : 1.0;
     final effectiveGaze = view.gazeEnabled || _systemGazeEnabled;
-    return VrLensWarpPostProcess(
+    final baseStereoTree = VrLensWarpPostProcess(
       enabled: !isHandheldMono,
       profile: _viewerProfile,
       stereoImageInsetOverride: view.stereoImageInset,
@@ -1442,6 +1547,79 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
               )
             : null,
       ),
+    );
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        baseStereoTree,
+        if (!isHandheldMono && gfxSettings.comfortVignetteEnabled)
+          IgnorePointer(
+            child: ValueListenableBuilder<double>(
+              valueListenable: _comfortVignetteAlpha,
+              builder: (context, alpha, _) {
+                if (alpha <= 0.01) return const SizedBox.shrink();
+                return StereoHudOverlay(
+                  alignment: Alignment.center,
+                  padding: EdgeInsets.zero,
+                  child: SizedBox.expand(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: RadialGradient(
+                          radius: 0.88,
+                          stops: const [0.46, 0.78, 1.0],
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withValues(alpha: alpha * 0.55),
+                            Colors.black.withValues(alpha: alpha),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        if (gfxSettings.showPerformanceHud)
+          IgnorePointer(
+            child: StereoHudOverlay(
+              alignment: Alignment.topCenter,
+              padding: const EdgeInsets.only(top: 10),
+              child: ValueListenableBuilder<VrLiveFrameMetrics>(
+                valueListenable: gfxSettings.telemetry,
+                builder: (context, metrics, _) {
+                  final healthy = metrics.fps >= 52.0;
+                  final accent = healthy
+                      ? const Color(0xFF34D399)
+                      : const Color(0xFFFBBF24);
+                  return Container(
+                    key: const ValueKey('vr_live_perf_hud_chip'),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xCC060D1D),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: accent.withValues(alpha: 0.65)),
+                    ),
+                    child: Text(
+                      metrics.compactLabel,
+                      style: TextStyle(
+                        color: accent,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.3,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

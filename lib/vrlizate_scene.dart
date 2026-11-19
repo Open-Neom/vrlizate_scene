@@ -48,6 +48,7 @@ export 'src/vr_frame_metrics.dart';
 export 'src/vr_headset_profile.dart';
 export 'src/vr_lens_warp_post_process.dart';
 export 'src/vr_sgsr_upscale_post_process.dart';
+export 'src/vr_graphics_comfort_settings.dart';
 export 'src/vr_fixed_foveation.dart';
 export 'src/vr_predictive_motion_culler.dart';
 export 'src/stereo_head_rig.dart';
