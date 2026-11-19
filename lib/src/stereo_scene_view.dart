@@ -22,7 +22,9 @@ import 'package:vrlizate/vrlizate.dart'
 import 'package:vrlizate_widgets/vrlizate_widgets.dart'
     show VrButton3D, VrTextLabel;
 
+import 'pbr_texture_library.dart';
 import 'quality_preset.dart';
+import 'vr_ktx2_texture.dart';
 import 'vr_device_performance.dart';
 import 'vr_fixed_foveation.dart';
 import 'vr_frame_quality.dart';
@@ -441,6 +443,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
 
   void _applyPreset(VrQualityPreset preset) {
     _preset = preset;
+    PbrTextureLibrary.defaultQualityTier = preset.tier;
     _qualityPolicy.reset();
     _qualityMonitor.resetThermalEvidence();
     view.scene.antiAliasingMode = preset.antiAliasing;
@@ -1072,6 +1075,10 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
           final effScale = (sgsrCfg.isActive && _sgsrShaderReady)
               ? sgsrCfg.internalRenderScale
               : 1.0;
+          final texStats = VrKtx2TextureLoader.stats.value;
+          final texTag = texStats.ktx2UploadedCount > 0
+              ? texStats.hardwareFormatLabel
+              : null;
           gfxSettings.publishTelemetry(
             VrLiveFrameMetrics(
               fps: fps,
@@ -1079,6 +1086,7 @@ class _StereoSceneViewState extends State<_ReadyStereoSceneView>
               tier: activePreset.tier,
               sgsrScale: effScale,
               isStereo: isStereo,
+              textureFormatTag: texTag,
             ),
           );
           _perfFrameCount = 0;

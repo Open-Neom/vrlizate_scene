@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -18,6 +19,15 @@ export 'pbr_texture_synth.dart'
         PbrSurface,
         PbrTextureRequest;
 
+/// Optional host-supplied reader for persisted cooked KTX2 binaries (e.g.
+/// local flash cache under `ApplicationSupportDirectory`). Kept callback-based
+/// so `vrlizate_scene` stays 100% Web-safe with zero `dart:io` imports.
+typedef VrKtx2CacheReader = Future<Uint8List?> Function(String cacheKey);
+
+/// Optional host-supplied writer for persisted cooked KTX2 binaries.
+typedef VrKtx2CacheWriter =
+    Future<void> Function(String cacheKey, Uint8List bytes);
+
 /// Runtime side of the procedural and photo-scanned PBR textures: generates or
 /// cooks sets off the UI thread, uploads hardware block-compressed `KTX2`
 /// (`ASTC 4x4` / `ETC2` / `BC1-BC3`) textures with coupled Toksvig specular
@@ -32,6 +42,54 @@ abstract final class PbrTextureLibrary {
   static final _uploaded = VrAsyncResourceCache<String, _Uploaded>(
     maxEntries: _cacheLimit,
   );
+  static final _cookedSets = VrAsyncResourceCache<Object, _Uploaded>(
+    maxEntries: _cacheLimit,
+  );
+
+  static VrKtx2CacheReader? _diskCacheRead;
+  static VrKtx2CacheWriter? _diskCacheWrite;
+
+  /// Configures an optional persistent KTX2 disk cache so coupled Toksvig
+  /// KTX2 textures (both photo-scanned and procedural) only cook once and load
+  /// in milliseconds on subsequent launches with zero APK bloat.
+  static void configureKtx2DiskCache({
+    VrKtx2CacheReader? read,
+    VrKtx2CacheWriter? write,
+  }) {
+    _diskCacheRead = read;
+    _diskCacheWrite = write;
+  }
+
+  /// Reads a previously cooked KTX2 binary from the configured disk cache,
+  /// validating its KTX2 header before returning it.
+  static Future<Uint8List?> readCookedKtx2(String key) async {
+    final reader = _diskCacheRead;
+    if (reader == null) return null;
+    try {
+      final bytes = await reader(key);
+      if (bytes == null || bytes.length < 80) return null;
+      final info = VrKtx2Codec.inspectKtx2Header(bytes);
+      if (!info.isSupportedRuntime2dTexture) return null;
+      return bytes;
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Persists a cooked KTX2 binary asynchronously to the configured disk cache.
+  static void writeCookedKtx2(String key, Uint8List bytes) {
+    final writer = _diskCacheWrite;
+    if (writer == null) return;
+    unawaited(
+      Future<void>(() async {
+        try {
+          await writer(key, bytes);
+        } on Object {
+          // Non-fatal: disk cache is strictly an optimization.
+        }
+      }),
+    );
+  }
 
   /// Default VR quality tier used when a caller does not pass `qualityTier`
   /// explicitly. Apps can bind this to their active [VrQualityPreset].
@@ -93,53 +151,68 @@ abstract final class PbrTextureLibrary {
       final ormSampling = budget.samplingForRole(VrTextureRole.ormData);
       if (useKtx2) {
         try {
-          final ktx2Set = await compute(
-            PbrTextureSynth.generateCompressedKtx2,
-            PbrCompressedKtx2Request(
-              request,
-              maxColorDimension: budget.maxDimensionForRole(
-                role,
-                content: TextureContent.color,
+          final cachePrefix = 'proc_v2|$key';
+          var albedoBytes = await readCookedKtx2('$cachePrefix|color');
+          var normalBytes = await readCookedKtx2('$cachePrefix|normal');
+          var ormBytes = await readCookedKtx2('$cachePrefix|orm');
+          if (albedoBytes == null || normalBytes == null || ormBytes == null) {
+            final ktx2Set = await compute(
+              PbrTextureSynth.generateCompressedKtx2,
+              PbrCompressedKtx2Request(
+                request,
+                maxColorDimension: budget.maxDimensionForRole(
+                  role,
+                  content: TextureContent.color,
+                ),
+                maxNormalDimension: budget.maxDimensionForRole(
+                  role,
+                  content: TextureContent.normal,
+                ),
+                maxOrmDimension: budget.maxDimensionForRole(
+                  VrTextureRole.ormData,
+                  content: TextureContent.data,
+                ),
               ),
-              maxNormalDimension: budget.maxDimensionForRole(
-                role,
-                content: TextureContent.normal,
-              ),
-              maxOrmDimension: budget.maxDimensionForRole(
-                VrTextureRole.ormData,
-                content: TextureContent.data,
-              ),
-            ),
-            debugLabel: 'pbr-ktx2:${request.surface.name}',
-          );
+              debugLabel: 'pbr-ktx2:${request.surface.name}',
+            );
+            albedoBytes = ktx2Set.albedoKtx2;
+            normalBytes = ktx2Set.normalKtx2;
+            ormBytes = ktx2Set.ormKtx2;
+            writeCookedKtx2('$cachePrefix|color', albedoBytes);
+            writeCookedKtx2('$cachePrefix|normal', normalBytes);
+            writeCookedKtx2('$cachePrefix|orm', ormBytes);
+          }
           final sources = await VrKtx2TextureLoader.loadBatch(
             <VrKtx2LoadRequest>[
               VrKtx2LoadRequest(
-                bytes: ktx2Set.albedoKtx2,
+                bytes: albedoBytes,
                 content: TextureContent.color,
                 sampling: surfaceSampling,
               ),
               VrKtx2LoadRequest(
-                bytes: ktx2Set.normalKtx2,
+                bytes: normalBytes,
                 content: TextureContent.normal,
                 sampling: surfaceSampling,
               ),
               VrKtx2LoadRequest(
-                bytes: ktx2Set.ormKtx2,
+                bytes: ormBytes,
                 content: TextureContent.data,
                 sampling: ormSampling,
               ),
             ],
           );
+          VrKtx2TextureLoader.recordToksvigMaterial();
           return _Uploaded(
             albedo: sources[0],
             normal: sources[1],
             metallicRoughness: sources[2],
             hasPackedOcclusion: true,
           );
-        } on Object {
-          // Graceful fallback to RGBA8 pixel upload if a mock/test environment
-          // does not realize glTF runtime carriers.
+        } on Object catch (error) {
+          VrKtx2TextureLoader.recordFallback(
+            error,
+            uncompressedBytes: request.size * request.size * 4 * 3,
+          );
         }
       }
 
@@ -336,11 +409,13 @@ abstract final class PbrTextureLibrary {
 
   /// Applies only the three photo maps and explicitly supplied factors.
   ///
-  /// Unlike [applyAsset], this preserves existing UV transforms, occlusion and
-  /// unspecified factors. Useful for an authored material whose tiling and
-  /// metalness are already configured. Every decode is followed by [isCurrent]
-  /// before the next map is requested; the material changes only after all
-  /// three maps are ready and the caller is still current.
+  /// Unlike [applyAsset], this preserves existing UV transforms and unspecified
+  /// factors. Useful for an authored material whose tiling and metalness are
+  /// already configured (for example, Riviera Rush asphalt). When
+  /// [packPhotoOrm] is `true` (default), all three maps (`Color`, `Normal`,
+  /// `ORM`) cook into a coupled Toksvig `KTX2` (`ASTC 4×4` / `ETC2` / `BC`)
+  /// pyramid and attach packed crevice AO if `material.occlusionTexture` is
+  /// unset.
   static Future<bool> applyAssetMaps(
     PhysicallyBasedMaterial material,
     PbrAssetSet set, {
@@ -351,23 +426,31 @@ abstract final class PbrTextureLibrary {
     double? roughnessFactor,
     double? metallicFactor,
     VrQualityTier? qualityTier,
+    VrTextureRole role = VrTextureRole.floor,
+    bool packPhotoOrm = true,
   }) async {
     await Scene.initializeStaticResources();
     if (!isCurrent() || !Scene.isReadyToRender) return false;
-    final budget = qualityTier != null ? VrTextureBudget.forTier(qualityTier) : null;
+    final budget = VrTextureBudget.forTier(qualityTier ?? defaultQualityTier);
     final uploaded = await _loadAsset(
       set,
       sampling,
       isCurrent,
       budget: budget,
-      role: VrTextureRole.heroSurface,
-      packPhotoOrm: false,
+      role: role,
+      packPhotoOrm: packPhotoOrm,
     );
     if (uploaded == null || !isCurrent()) return false;
     material
       ..baseColorTexture = uploaded.albedo
       ..normalTexture = uploaded.normal
       ..metallicRoughnessTexture = uploaded.metallicRoughness;
+    if (uploaded.hasPackedOcclusion && material.occlusionTexture == null) {
+      material
+        ..occlusionTexture = uploaded.metallicRoughness
+        ..occlusionTextureTransform = material.metallicRoughnessTextureTransform
+        ..occlusionStrength = 0.72;
+    }
     if (tint != null) material.baseColorFactor = tint;
     if (normalScale != null) material.normalScale = normalScale;
     if (roughnessFactor != null) material.roughnessFactor = roughnessFactor;
@@ -428,56 +511,113 @@ abstract final class PbrTextureLibrary {
     ),
   );
 
-  static Future<TextureSource> _loadPackedPhotoOrm(
+  static Future<Uint8List> _loadRawAssetBytes(String assetPath) async {
+    final data = await rootBundle.load(assetPath);
+    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+  }
+
+  static Future<_Uploaded> _loadCoupledPhotoKtx2Set(
     PbrAssetSet set,
+    TextureSampling surfaceSampling,
     TextureSampling ormSampling, {
+    required int maxColorDim,
+    required int maxNormalDim,
     required int maxOrmDim,
-  }) => _assetMaps.load(
+  }) => _cookedSets.load(
     (
-      'packedPhotoOrm',
-      set.normalAsset,
-      set.roughnessAsset,
+      'coupledPhotoKtx2',
+      set.resourceKey,
+      maxColorDim,
+      maxNormalDim,
       maxOrmDim,
+      surfaceSampling.maxAnisotropy,
       ormSampling.maxAnisotropy,
-      ormSampling.mipmaps,
     ),
     () async {
-      final normDecoded = await _decodeAssetRgba(
-        set.normalAsset,
-        maxSize: maxOrmDim,
-      );
-      final roughDecoded = await _decodeAssetRgba(
-        set.roughnessAsset,
-        maxSize: maxOrmDim,
-      );
-      final ktx2Bytes = await compute(
-        _cookPhotoOrmKtx2Isolate,
-        _PhotoOrmCookInput(
-          roughRgba: roughDecoded.rgba,
-          roughW: roughDecoded.width,
-          roughH: roughDecoded.height,
-          normRgba: normDecoded.rgba,
-          normW: normDecoded.width,
-          normH: normDecoded.height,
-        ),
-        debugLabel: 'pbr-photo-orm:${set.roughnessAsset}',
-      );
-      try {
-        return await VrKtx2TextureLoader.load(
-          ktx2Bytes,
-          content: TextureContent.data,
-          sampling: ormSampling,
-        );
-      } on Object {
-        final baseLevel = VrKtx2Codec.decodeUniversalKtx2Level(ktx2Bytes);
-        return Texture2D.fromPixels(
-          baseLevel.rgba,
-          baseLevel.width,
-          baseLevel.height,
-          content: TextureContent.data,
-          sampling: ormSampling,
-        );
+      Uint8List? colorKtx2;
+      Uint8List? normalKtx2;
+      Uint8List? ormKtx2;
+
+      if (set.hasPreCookedKtx2) {
+        colorKtx2 = await _loadRawAssetBytes(set.colorKtx2Asset!);
+        normalKtx2 = await _loadRawAssetBytes(set.normalKtx2Asset!);
+        ormKtx2 = await _loadRawAssetBytes(set.ormKtx2Asset!);
+      } else {
+        final cachePrefix =
+            'photo_v2|${set.colorAsset}|${set.normalAsset}|${set.roughnessAsset}'
+            '|$maxColorDim|$maxNormalDim|$maxOrmDim';
+        colorKtx2 = await readCookedKtx2('$cachePrefix|color');
+        normalKtx2 = await readCookedKtx2('$cachePrefix|normal');
+        ormKtx2 = await readCookedKtx2('$cachePrefix|orm');
+
+        if (colorKtx2 == null || normalKtx2 == null || ormKtx2 == null) {
+          final decodeDim = maxColorDim > maxNormalDim
+              ? maxColorDim
+              : maxNormalDim;
+          final colorDecoded = await _decodeAssetRgba(
+            set.colorAsset,
+            maxSize: decodeDim,
+          );
+          final normDecoded = await _decodeAssetRgba(
+            set.normalAsset,
+            maxSize: decodeDim,
+          );
+          final roughDecoded = await _decodeAssetRgba(
+            set.roughnessAsset,
+            maxSize: decodeDim,
+          );
+          final cooked = await compute(
+            _cookCoupledPhotoSetKtx2Isolate,
+            _CoupledPhotoKtx2CookInput(
+              colorRgba: colorDecoded.rgba,
+              colorW: colorDecoded.width,
+              colorH: colorDecoded.height,
+              normRgba: normDecoded.rgba,
+              normW: normDecoded.width,
+              normH: normDecoded.height,
+              roughRgba: roughDecoded.rgba,
+              roughW: roughDecoded.width,
+              roughH: roughDecoded.height,
+              maxColorDim: maxColorDim,
+              maxNormalDim: maxNormalDim,
+              maxOrmDim: maxOrmDim,
+              supercompress: _diskCacheWrite != null,
+            ),
+            debugLabel: 'pbr-photo-ktx2:${set.colorAsset}',
+          );
+          colorKtx2 = cooked.colorKtx2;
+          normalKtx2 = cooked.normalKtx2;
+          ormKtx2 = cooked.ormKtx2;
+          writeCookedKtx2('$cachePrefix|color', colorKtx2);
+          writeCookedKtx2('$cachePrefix|normal', normalKtx2);
+          writeCookedKtx2('$cachePrefix|orm', ormKtx2);
+        }
       }
+
+      final sources = await VrKtx2TextureLoader.loadBatch(<VrKtx2LoadRequest>[
+        VrKtx2LoadRequest(
+          bytes: colorKtx2,
+          content: TextureContent.color,
+          sampling: surfaceSampling,
+        ),
+        VrKtx2LoadRequest(
+          bytes: normalKtx2,
+          content: TextureContent.normal,
+          sampling: surfaceSampling,
+        ),
+        VrKtx2LoadRequest(
+          bytes: ormKtx2,
+          content: TextureContent.data,
+          sampling: ormSampling,
+        ),
+      ]);
+      VrKtx2TextureLoader.recordToksvigMaterial();
+      return _Uploaded(
+        albedo: sources[0],
+        normal: sources[1],
+        metallicRoughness: sources[2],
+        hasPackedOcclusion: true,
+      );
     },
   );
 
@@ -546,6 +686,32 @@ abstract final class PbrTextureLibrary {
       content: TextureContent.data,
     );
 
+    final useCoupledKtx2 =
+        packPhotoOrm && (budget?.preferGpuBlockCompression ?? true);
+    if (useCoupledKtx2) {
+      final ormSampling = budget != null
+          ? budget.samplingForRole(VrTextureRole.ormData)
+          : sampling;
+      try {
+        final uploaded = await _loadCoupledPhotoKtx2Set(
+          set,
+          sampling,
+          ormSampling,
+          maxColorDim: colorMax ?? 1024,
+          maxNormalDim: normalMax ?? 1024,
+          maxOrmDim: ormMax ?? 512,
+        );
+        if (!isCurrent()) return null;
+        return uploaded;
+      } on Object catch (error) {
+        final cDim = colorMax ?? 1024;
+        VrKtx2TextureLoader.recordFallback(
+          error,
+          uncompressedBytes: cDim * cDim * 4 * 3,
+        );
+      }
+    }
+
     final color = await _loadAssetMap(
       set.colorAsset,
       TextureContent.color,
@@ -560,24 +726,6 @@ abstract final class PbrTextureLibrary {
       maxSize: normalMax,
     );
     if (!isCurrent()) return null;
-
-    if (packPhotoOrm) {
-      final ormSampling = budget != null
-          ? budget.samplingForRole(VrTextureRole.ormData)
-          : sampling;
-      final packedOrm = await _loadPackedPhotoOrm(
-        set,
-        ormSampling,
-        maxOrmDim: ormMax ?? 512,
-      );
-      if (!isCurrent()) return null;
-      return _Uploaded(
-        albedo: color,
-        normal: normal,
-        metallicRoughness: packedOrm,
-        hasPackedOcclusion: true,
-      );
-    }
 
     final roughness = await _loadAssetMap(
       set.roughnessAsset,
@@ -631,6 +779,7 @@ abstract final class PbrTextureLibrary {
   /// Drops every cached upload (tests, memory pressure).
   static void clearCache() {
     _uploaded.clear();
+    _cookedSets.clear();
     _assetMaps.clear();
   }
 
@@ -638,29 +787,58 @@ abstract final class PbrTextureLibrary {
   static int get cachedSetCount => _uploaded.completedCount;
 }
 
-final class _PhotoOrmCookInput {
-  const _PhotoOrmCookInput({
-    required this.roughRgba,
-    required this.roughW,
-    required this.roughH,
+final class _CoupledPhotoKtx2CookInput {
+  const _CoupledPhotoKtx2CookInput({
+    required this.colorRgba,
+    required this.colorW,
+    required this.colorH,
     required this.normRgba,
     required this.normW,
     required this.normH,
+    required this.roughRgba,
+    required this.roughW,
+    required this.roughH,
+    required this.maxColorDim,
+    required this.maxNormalDim,
+    required this.maxOrmDim,
+    required this.supercompress,
   });
 
-  final Uint8List roughRgba;
-  final int roughW;
-  final int roughH;
+  final Uint8List colorRgba;
+  final int colorW;
+  final int colorH;
   final Uint8List normRgba;
   final int normW;
   final int normH;
+  final Uint8List roughRgba;
+  final int roughW;
+  final int roughH;
+  final int maxColorDim;
+  final int maxNormalDim;
+  final int maxOrmDim;
+  final bool supercompress;
 }
 
-Uint8List _cookPhotoOrmKtx2Isolate(_PhotoOrmCookInput input) {
+final class _CoupledPhotoKtx2CookResult {
+  const _CoupledPhotoKtx2CookResult({
+    required this.colorKtx2,
+    required this.normalKtx2,
+    required this.ormKtx2,
+  });
+
+  final Uint8List colorKtx2;
+  final Uint8List normalKtx2;
+  final Uint8List ormKtx2;
+}
+
+_CoupledPhotoKtx2CookResult _cookCoupledPhotoSetKtx2Isolate(
+  _CoupledPhotoKtx2CookInput input,
+) {
   // Store B = 1.0 (255) so `material.metallicFactor` continues to scale
   // dielectric (0.0) and metallic (e.g. MetalPlates 0.9) photo sets identically
-  // to grayscale Roughness JPGs while R carries cavity AO and G carries
-  // Toksvig-filtered perceptual roughness.
+  // to grayscale Roughness JPGs while R carries cavity AO (from both normal
+  // divergence and albedo crevice luminance) and G carries Toksvig-filtered
+  // perceptual roughness.
   final baseOrm = VrToksvigFilter.packPhotoRoughnessAndNormalToOrm(
     roughnessRgba: input.roughRgba,
     roughnessWidth: input.roughW,
@@ -668,9 +846,19 @@ Uint8List _cookPhotoOrmKtx2Isolate(_PhotoOrmCookInput input) {
     normalRgba: input.normRgba,
     normalWidth: input.normW,
     normalHeight: input.normH,
+    albedoRgba: input.colorRgba,
+    albedoWidth: input.colorW,
+    albedoHeight: input.colorH,
     metallic: 1.0,
   );
-  // Build coupled multi-level Toksvig ORM mip chain from the normal pyramid.
+  // Build coupled linear-light sRGB albedo, unit-renormalized normal, and
+  // cumulative multi-level Toksvig ORM mip chains in one pass.
+  final albedoChain = VrToksvigFilter.downsampleColorMipChain(
+    input.colorRgba,
+    input.colorW,
+    input.colorH,
+    maxBaseDimension: input.maxColorDim,
+  );
   final dummyAlbedo = Uint8List(4)..fillRange(0, 4, 255);
   final coupled = VrToksvigFilter.generateCoupledPbrMipChain(
     albedoRgba: dummyAlbedo,
@@ -678,8 +866,26 @@ Uint8List _cookPhotoOrmKtx2Isolate(_PhotoOrmCookInput input) {
     ormRgba: baseOrm,
     width: input.normW,
     height: input.normH,
+    maxNormalDimension: input.maxNormalDim,
+    maxOrmDimension: input.maxOrmDim,
   );
-  return VrKtx2Codec.encodeMipChainToKtx2(coupled.orm, srgb: false);
+  return _CoupledPhotoKtx2CookResult(
+    colorKtx2: VrKtx2Codec.encodeMipChainToKtx2(
+      albedoChain,
+      srgb: true,
+      supercompress: input.supercompress,
+    ),
+    normalKtx2: VrKtx2Codec.encodeMipChainToKtx2(
+      coupled.normal,
+      srgb: false,
+      supercompress: input.supercompress,
+    ),
+    ormKtx2: VrKtx2Codec.encodeMipChainToKtx2(
+      coupled.orm,
+      srgb: false,
+      supercompress: input.supercompress,
+    ),
+  );
 }
 
 class _Uploaded {
@@ -697,13 +903,17 @@ class _Uploaded {
 }
 
 /// Asset paths of one photo-scanned PBR set (ambientCG `*_Color`,
-/// `*_NormalGL`, `*_Roughness` JPGs). Ship them with a LICENSE.md and
-/// SHA-256 table like `assets/riviera_rush/`.
+/// `*_NormalGL`, `*_Roughness` JPGs, and optional pre-cooked `.ktx2`
+/// companions). Ship them with a LICENSE.md and SHA-256 table like
+/// `assets/riviera_rush/`.
 class PbrAssetSet {
   const PbrAssetSet({
     required this.colorAsset,
     required this.normalAsset,
     required this.roughnessAsset,
+    this.colorKtx2Asset,
+    this.normalKtx2Asset,
+    this.ormKtx2Asset,
     this.tileWidthMeters = 1.0,
     this.tileHeightMeters = 1.0,
   });
@@ -726,13 +936,24 @@ class PbrAssetSet {
   final String colorAsset;
   final String normalAsset;
   final String roughnessAsset;
+  final String? colorKtx2Asset;
+  final String? normalKtx2Asset;
+  final String? ormKtx2Asset;
   final double tileWidthMeters;
   final double tileHeightMeters;
 
+  bool get hasPreCookedKtx2 =>
+      colorKtx2Asset != null &&
+      normalKtx2Asset != null &&
+      ormKtx2Asset != null;
+
   /// Identity of the decoded maps. UV scale is applied per material and does
   /// not require another upload; changing relief or roughness maps does.
-  (String, String, String) get resourceKey =>
-      (colorAsset, normalAsset, roughnessAsset);
+  (String, String, String) get resourceKey => (
+    colorKtx2Asset ?? colorAsset,
+    normalKtx2Asset ?? normalAsset,
+    ormKtx2Asset ?? roughnessAsset,
+  );
 
   /// UV repeats so the set keeps its physical scale on a face
   /// [worldWidth] × [worldHeight] meters wide.

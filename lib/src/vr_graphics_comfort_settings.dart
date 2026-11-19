@@ -50,6 +50,7 @@ class VrLiveFrameMetrics {
     required this.tier,
     required this.sgsrScale,
     required this.isStereo,
+    this.textureFormatTag,
   });
 
   static const initial = VrLiveFrameMetrics(
@@ -65,6 +66,7 @@ class VrLiveFrameMetrics {
   final VrQualityTier tier;
   final double sgsrScale;
   final bool isStereo;
+  final String? textureFormatTag;
 
   String get compactLabel {
     final tierLabel = switch (tier) {
@@ -77,7 +79,10 @@ class VrLiveFrameMetrics {
         ? 'SGSR ${sgsrScale.toStringAsFixed(2)}×'
         : 'NATIVO';
     final viewTag = isStereo ? 'VR' : '1D';
-    return '${fps.round()} FPS · ${frameMs.toStringAsFixed(1)} ms · $tierLabel · $scaleTag · $viewTag';
+    final texTag = (textureFormatTag != null && textureFormatTag!.isNotEmpty)
+        ? ' · $textureFormatTag'
+        : '';
+    return '${fps.round()} FPS · ${frameMs.toStringAsFixed(1)} ms · $tierLabel · $scaleTag$texTag · $viewTag';
   }
 }
 

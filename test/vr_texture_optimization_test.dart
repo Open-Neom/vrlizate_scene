@@ -250,5 +250,96 @@ void main() {
       );
       expect(kFull, isNot(kHalf));
     });
+
+    test(
+      'VrKtx2Codec LZ77 supercompression (lz/1) shrinks payload and round-trips every mip level',
+      () {
+        final synth = PbrTextureSynth.generate(
+          const PbrTextureRequest(PbrSurface.bricks, size: 64, seed: 7),
+        );
+        final coupled = VrToksvigFilter.generateCoupledPbrMipChain(
+          albedoRgba: synth.albedo,
+          normalRgba: synth.normal,
+          ormRgba: synth.metallicRoughness,
+          width: synth.size,
+          height: synth.size,
+        );
+        final rawKtx2 = VrKtx2Codec.encodeMipChainToKtx2(
+          coupled.orm,
+          srgb: false,
+          supercompress: false,
+        );
+        final lzKtx2 = VrKtx2Codec.encodeMipChainToKtx2(
+          coupled.orm,
+          srgb: false,
+          supercompress: true,
+        );
+        final rawInfo = VrKtx2Codec.inspectKtx2Header(rawKtx2);
+        final lzInfo = VrKtx2Codec.inspectKtx2Header(lzKtx2);
+
+        expect(rawInfo.isLzSupercompressed, isFalse);
+        expect(lzInfo.isLzSupercompressed, isTrue);
+        expect(lzInfo.isSupportedRuntime2dTexture, isTrue);
+        expect(lzKtx2.length, lessThan(rawKtx2.length));
+        expect(
+          lzInfo.estimatedUncompressedVramBytes,
+          greaterThan(lzInfo.estimatedGpuVramBytes * 3),
+        );
+
+        for (var lvl = 0; lvl < lzInfo.levelCount; lvl++) {
+          final a = VrKtx2Codec.decodeUniversalKtx2Level(rawKtx2, level: lvl);
+          final b = VrKtx2Codec.decodeUniversalKtx2Level(lzKtx2, level: lvl);
+          expect(b.width, a.width);
+          expect(b.height, a.height);
+          expect(b.rgba, orderedEquals(a.rgba));
+        }
+      },
+    );
+
+    test(
+      'VrKtx2TextureStats formats live ASTC VRAM savings and PbrTextureLibrary disk cache validates KTX2',
+      () async {
+        const stats = VrKtx2TextureStats(
+          hardwareFormatLabel: 'ASTC 4×4',
+          manualMipsSupported: true,
+          ktx2UploadedCount: 15,
+          ktx2MipLevelsUploaded: 120,
+          fallbackRgbaCount: 0,
+          toksvigMaterialsCount: 5,
+          estimatedVramBytes: 4 * 1024 * 1024,
+          estimatedUncompressedVramBytes: 16 * 1024 * 1024,
+        );
+        expect(stats.isHardwareCompressed, isTrue);
+        expect(stats.compressionRatio, closeTo(4.0, 1e-6));
+        expect(stats.compactBadgeEs, contains('ASTC 4×4'));
+        expect(stats.compactBadgeEs, contains('-75% VRAM'));
+
+        final store = <String, Uint8List>{};
+        PbrTextureLibrary.configureKtx2DiskCache(
+          read: (k) async => store[k],
+          write: (k, b) async => store[k] = b,
+        );
+        addTearDown(() => PbrTextureLibrary.configureKtx2DiskCache());
+
+        store['bad'] = Uint8List.fromList(<int>[1, 2, 3, 4]);
+        expect(await PbrTextureLibrary.readCookedKtx2('bad'), isNull);
+
+        final tiny = VrKtx2Codec.encodeMipChainToKtx2(
+          <VrRawMipLevel>[
+            VrRawMipLevel(
+              width: 8,
+              height: 8,
+              rgba: Uint8List(8 * 8 * 4)..fillRange(0, 8 * 8 * 4, 255),
+            ),
+          ],
+          srgb: true,
+          supercompress: true,
+        );
+        store['good'] = tiny;
+        final hit = await PbrTextureLibrary.readCookedKtx2('good');
+        expect(hit, isNotNull);
+        expect(hit!.length, tiny.length);
+      },
+    );
   });
 }

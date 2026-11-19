@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_scene/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 
@@ -498,6 +499,8 @@ final class VrKtx2HeaderInfo {
     required this.dfdColorModel,
     required this.isUniversalBlockPayload,
     required this.estimatedGpuVramBytes,
+    this.isLzSupercompressed = false,
+    this.estimatedUncompressedVramBytes = 0,
   });
 
   final int width;
@@ -510,7 +513,9 @@ final class VrKtx2HeaderInfo {
   final int supercompressionScheme;
   final int dfdColorModel;
   final bool isUniversalBlockPayload;
+  final bool isLzSupercompressed;
   final int estimatedGpuVramBytes;
+  final int estimatedUncompressedVramBytes;
 
   /// True for standard `KHR_texture_basisu` UASTC (`166`), ETC1S (`163`),
   /// uncompressed RGBA8 (`VK_FORMAT_R8G8B8A8_UNORM = 37` / `_SRGB = 43`), or
@@ -534,8 +539,9 @@ final class VrKtx2HeaderInfo {
 ///
 /// Encodes pre-filtered [VrRawMipLevel] pyramids into `KTX2` containers carrying
 /// `4x4` 16-byte endpoint-interpolated blocks (`fsBlockFormat = universal/1`),
-/// which `flutter_scene` transcodes on a background isolate directly to native
-/// GPU hardware block formats:
+/// with optional `fsSupercompress = lz/1` payload supercompression for compact
+/// disk caches and asset delivery. `flutter_scene` transcodes on a background
+/// isolate directly to native GPU hardware block formats:
 /// - `ASTC 4x4` (`astc4x4LDR`, 8 bpp — **4x less VRAM & memory bandwidth**) on
 ///   Android, iOS, visionOS, and Apple Silicon;
 /// - `BC1` / `BC3` (4–8 bpp) on desktop GPUs;
@@ -548,6 +554,8 @@ abstract final class VrKtx2Codec {
 
   static const String _blockFormatKey = 'fsBlockFormat';
   static const String _blockFormatUniversal = 'universal/1';
+  static const String _supercompressKey = 'fsSupercompress';
+  static const String _supercompressLz = 'lz/1';
   static const String _alphaKey = 'fsAlpha';
 
   static bool hasKtx2Magic(Uint8List bytes) {
@@ -617,6 +625,7 @@ abstract final class VrKtx2Codec {
     final kvdOffset = data.getUint32(56, Endian.little);
     final kvdLength = data.getUint32(60, Endian.little);
     var isUniversal = false;
+    var isLzSupercompressed = false;
     if (kvdLength > 0) {
       if (kvdOffset + kvdLength > bytes.length) {
         throw const FormatException('Malformed KTX2 Key/Value section.');
@@ -628,14 +637,20 @@ abstract final class VrKtx2Codec {
       if (marker != null && utf8.decode(marker) == _blockFormatUniversal) {
         isUniversal = true;
       }
+      final sc = kvs[_supercompressKey];
+      if (sc != null && utf8.decode(sc) == _supercompressLz) {
+        isLzSupercompressed = true;
+      }
     }
 
     final blockCompressed =
         isUniversal || dfdColorModel == 166 || dfdColorModel == 163;
     var vramBytes = 0;
+    var uncompressedVramBytes = 0;
     for (var level = 0; level < levelCount; level++) {
       final mw = math.max(1, width >> level);
       final mh = math.max(1, height >> level);
+      uncompressedVramBytes += mw * mh * 4;
       if (blockCompressed) {
         final bx = (mw + 3) >> 2;
         final by = (mh + 3) >> 2;
@@ -658,16 +673,23 @@ abstract final class VrKtx2Codec {
       supercompressionScheme: supercompression,
       dfdColorModel: dfdColorModel,
       isUniversalBlockPayload: isUniversal,
+      isLzSupercompressed: isLzSupercompressed,
       estimatedGpuVramBytes: vramBytes,
+      estimatedUncompressedVramBytes: uncompressedVramBytes,
     );
   }
 
   /// Encodes a pre-filtered [levels] mip chain (level 0 = base) into KTX2 bytes
   /// carrying 16-byte `4x4` blocks ready for native GPU `ASTC 4x4` / `ETC2` /
   /// `BC1-BC3` transcoding.
+  ///
+  /// When [supercompress] is `true`, each mip level's block payload is wrapped
+  /// with `flutter_scene`'s compatible `fsSupercompress = lz/1` LZ77 codec
+  /// (typically 45–65% smaller on disk/flash while keeping identical GPU VRAM).
   static Uint8List encodeMipChainToKtx2(
     List<VrRawMipLevel> levels, {
     bool srgb = true,
+    bool supercompress = false,
   }) {
     if (levels.isEmpty) {
       throw ArgumentError('KTX2 mip chain must contain at least one level.');
@@ -682,31 +704,37 @@ abstract final class VrKtx2Codec {
       }
     }
 
-    final encodedLevels = <Uint8List>[
+    final rawBlockLevels = <Uint8List>[
       for (final lvl in levels)
         encodeUniversalBlocks4x4(lvl.rgba, lvl.width, lvl.height),
+    ];
+    final storedLevels = <Uint8List>[
+      for (final blocks in rawBlockLevels)
+        supercompress ? lzCompress(blocks) : blocks,
     ];
 
     final dfd = _buildDfd(srgb: srgb);
     final kvd = _encodeKeyValues({
       if (hasAlpha) _alphaKey: Uint8List.fromList(utf8.encode('1')),
       _blockFormatKey: Uint8List.fromList(utf8.encode(_blockFormatUniversal)),
+      if (supercompress)
+        _supercompressKey: Uint8List.fromList(utf8.encode(_supercompressLz)),
     });
 
     const headerEnd = 80;
     const entrySize = 24;
-    var cursor = headerEnd + entrySize * encodedLevels.length;
+    var cursor = headerEnd + entrySize * storedLevels.length;
     final dfdOffset = _align(cursor, 4);
     cursor = dfdOffset + dfd.length;
     final kvdOffset = _align(cursor, 4);
     cursor = kvdOffset + kvd.length;
 
     // Store smallest mip first per KTX2 specification, 16-byte aligned.
-    final levelOffsets = List<int>.filled(encodedLevels.length, 0);
-    for (var i = encodedLevels.length - 1; i >= 0; i--) {
+    final levelOffsets = List<int>.filled(storedLevels.length, 0);
+    for (var i = storedLevels.length - 1; i >= 0; i--) {
       cursor = _align(cursor, 16);
       levelOffsets[i] = cursor;
-      cursor += encodedLevels[i].length;
+      cursor += storedLevels[i].length;
     }
 
     final out = Uint8List(cursor);
@@ -719,7 +747,7 @@ abstract final class VrKtx2Codec {
     bd.setUint32(28, 0, Endian.little); // pixelDepth
     bd.setUint32(32, 0, Endian.little); // layerCount
     bd.setUint32(36, 1, Endian.little); // faceCount = 1
-    bd.setUint32(40, encodedLevels.length, Endian.little);
+    bd.setUint32(40, storedLevels.length, Endian.little);
     bd.setUint32(44, 0, Endian.little); // supercompression = none
     bd.setUint32(48, dfdOffset, Endian.little);
     bd.setUint32(52, dfd.length, Endian.little);
@@ -727,21 +755,20 @@ abstract final class VrKtx2Codec {
     bd.setUint32(60, kvd.length, Endian.little);
     // sgdByteOffset / sgdByteLength = 0 (bytes 64..79 already zero).
 
-    for (var i = 0; i < encodedLevels.length; i++) {
+    for (var i = 0; i < storedLevels.length; i++) {
       final entry = headerEnd + i * entrySize;
-      final len = encodedLevels[i].length;
       bd.setUint32(entry, levelOffsets[i], Endian.little);
-      bd.setUint32(entry + 8, len, Endian.little);
-      bd.setUint32(entry + 16, len, Endian.little);
+      bd.setUint32(entry + 8, storedLevels[i].length, Endian.little);
+      bd.setUint32(entry + 16, rawBlockLevels[i].length, Endian.little);
     }
 
     out.setRange(dfdOffset, dfdOffset + dfd.length, dfd);
     out.setRange(kvdOffset, kvdOffset + kvd.length, kvd);
-    for (var i = 0; i < encodedLevels.length; i++) {
+    for (var i = 0; i < storedLevels.length; i++) {
       out.setRange(
         levelOffsets[i],
-        levelOffsets[i] + encodedLevels[i].length,
-        encodedLevels[i],
+        levelOffsets[i] + storedLevels[i].length,
+        storedLevels[i],
       );
     }
     return out;
@@ -766,12 +793,148 @@ abstract final class VrKtx2Codec {
     final length = bd.getUint32(entry + 8, Endian.little);
     final mw = math.max(1, info.width >> level);
     final mh = math.max(1, info.height >> level);
-    final blocks = Uint8List.sublistView(ktx2Bytes, offset, offset + length);
+    final payload = Uint8List.sublistView(ktx2Bytes, offset, offset + length);
+    final blocks = info.isLzSupercompressed
+        ? lzDecompress(payload, ((mw + 3) >> 2) * ((mh + 3) >> 2) * 16)
+        : payload;
     return VrRawMipLevel(
       width: mw,
       height: mh,
       rgba: decodeUniversalBlocks4x4(blocks, mw, mh),
     );
+  }
+
+  /// Pure-Dart LZ77 compressor matching `flutter_scene`'s `fsSupercompress=lz/1`
+  /// format byte-for-byte.
+  static Uint8List lzCompress(Uint8List input) {
+    const minMatch = 4;
+    const maxChain = 32;
+    const hashBits = 16;
+    const hashSize = 1 << hashBits;
+
+    final n = input.length;
+    final out = BytesBuilder(copy: false);
+    if (n == 0) return out.toBytes();
+
+    final head = Int32List(hashSize)..fillRange(0, hashSize, -1);
+    final prev = Int32List(n);
+
+    int hash4(int i) {
+      final h =
+          ((input[i] * 131 + input[i + 1]) * 131 + input[i + 2]) * 131 +
+          input[i + 3];
+      return (h ^ (h >> 13)) & (hashSize - 1);
+    }
+
+    int matchLenAt(int a, int b) {
+      var len = 0;
+      while (b + len < n && input[a + len] == input[b + len]) {
+        len++;
+      }
+      return len;
+    }
+
+    void writeVarint(int value) {
+      var v = value;
+      while (v >= 0x80) {
+        out.addByte((v & 0x7F) | 0x80);
+        v >>= 7;
+      }
+      out.addByte(v);
+    }
+
+    void emitLiterals(int start, int end) {
+      writeVarint(end - start);
+      if (end > start) out.add(Uint8List.sublistView(input, start, end));
+    }
+
+    var i = 0;
+    var literalStart = 0;
+    while (i < n) {
+      var matchLen = 0;
+      var matchDist = 0;
+      if (i + minMatch <= n) {
+        final h = hash4(i);
+        var candidate = head[h];
+        prev[i] = candidate;
+        head[h] = i;
+        var tries = 0;
+        while (candidate >= 0 && tries < maxChain) {
+          final len = matchLenAt(candidate, i);
+          if (len > matchLen) {
+            matchLen = len;
+            matchDist = i - candidate;
+            if (i + len >= n) break;
+          }
+          candidate = prev[candidate];
+          tries++;
+        }
+      }
+
+      if (matchLen >= minMatch) {
+        emitLiterals(literalStart, i);
+        writeVarint(matchLen - minMatch);
+        writeVarint(matchDist);
+        final end = i + matchLen;
+        for (var k = i + 1; k < end; k++) {
+          if (k + minMatch <= n) {
+            final h = hash4(k);
+            prev[k] = head[h];
+            head[h] = k;
+          }
+        }
+        i = end;
+        literalStart = i;
+      } else {
+        i++;
+      }
+    }
+    emitLiterals(literalStart, n);
+    return out.toBytes();
+  }
+
+  /// Pure-Dart LZ77 decompressor matching `flutter_scene`'s `fsSupercompress=lz/1`.
+  static Uint8List lzDecompress(Uint8List compressed, int uncompressedSize) {
+    const minMatch = 4;
+    final out = Uint8List(uncompressedSize);
+    var produced = 0;
+    var p = 0;
+
+    int readVarint() {
+      var shift = 0;
+      var result = 0;
+      while (true) {
+        if (p >= compressed.length) {
+          throw const FormatException('Truncated LZ77 varint in KTX2 payload.');
+        }
+        final b = compressed[p++];
+        result |= (b & 0x7F) << shift;
+        if (b < 0x80) return result;
+        shift += 7;
+      }
+    }
+
+    while (produced < uncompressedSize) {
+      final literalLength = readVarint();
+      if (p + literalLength > compressed.length ||
+          produced + literalLength > uncompressedSize) {
+        throw const FormatException('LZ77 literal overrun in KTX2 payload.');
+      }
+      for (var k = 0; k < literalLength; k++) {
+        out[produced++] = compressed[p++];
+      }
+      if (produced >= uncompressedSize) break;
+      final matchLength = readVarint() + minMatch;
+      final distance = readVarint();
+      var src = produced - distance;
+      if (src < 0 || distance <= 0 || produced + matchLength > uncompressedSize) {
+        throw const FormatException('Invalid LZ77 back-reference in KTX2 payload.');
+      }
+      for (var k = 0; k < matchLength; k++) {
+        out[produced++] = out[src++];
+      }
+    }
+    return out;
   }
 
   /// Encodes `width × height` RGBA8 pixels into 16-byte `4x4` blocks using
@@ -1065,6 +1228,94 @@ final class VrKtx2LoadRequest {
   final TextureSampling sampling;
 }
 
+/// Live runtime telemetry for VRlizate's KTX2 + Toksvig GPU texture pipeline.
+@immutable
+final class VrKtx2TextureStats {
+  const VrKtx2TextureStats({
+    required this.hardwareFormatLabel,
+    required this.manualMipsSupported,
+    required this.ktx2UploadedCount,
+    required this.ktx2MipLevelsUploaded,
+    required this.fallbackRgbaCount,
+    required this.toksvigMaterialsCount,
+    required this.estimatedVramBytes,
+    required this.estimatedUncompressedVramBytes,
+    this.lastFallbackError,
+  });
+
+  const VrKtx2TextureStats.initial()
+    : hardwareFormatLabel = 'Pendiente',
+      manualMipsSupported = false,
+      ktx2UploadedCount = 0,
+      ktx2MipLevelsUploaded = 0,
+      fallbackRgbaCount = 0,
+      toksvigMaterialsCount = 0,
+      estimatedVramBytes = 0,
+      estimatedUncompressedVramBytes = 0,
+      lastFallbackError = null;
+
+  final String hardwareFormatLabel;
+  final bool manualMipsSupported;
+  final int ktx2UploadedCount;
+  final int ktx2MipLevelsUploaded;
+  final int fallbackRgbaCount;
+  final int toksvigMaterialsCount;
+  final int estimatedVramBytes;
+  final int estimatedUncompressedVramBytes;
+  final String? lastFallbackError;
+
+  int get vramSavedBytes =>
+      math.max(0, estimatedUncompressedVramBytes - estimatedVramBytes);
+
+  double get compressionRatio => estimatedVramBytes > 0
+      ? estimatedUncompressedVramBytes / estimatedVramBytes
+      : 1.0;
+
+  bool get isHardwareCompressed =>
+      ktx2UploadedCount > 0 &&
+      hardwareFormatLabel != 'RGBA8' &&
+      hardwareFormatLabel != 'Pendiente';
+
+  /// Compact badge label for live HUD / Settings UI.
+  String get compactBadgeEs {
+    if (ktx2UploadedCount == 0) {
+      return 'KTX2 · Toksvig AA (esperando GPU)';
+    }
+    final savedMb = vramSavedBytes / (1024 * 1024);
+    final pctSaved = estimatedUncompressedVramBytes > 0
+        ? ((vramSavedBytes * 100) / estimatedUncompressedVramBytes).round()
+        : 0;
+    final mipTag = manualMipsSupported ? 'Mips Toksvig' : 'Base';
+    if (isHardwareCompressed && pctSaved > 0) {
+      return 'KTX2 $hardwareFormatLabel · $mipTag · $ktx2UploadedCount mapas · -$pctSaved% VRAM (${savedMb.toStringAsFixed(1)} MB ahorrados)';
+    }
+    return 'KTX2 $hardwareFormatLabel · $mipTag · $ktx2UploadedCount mapas';
+  }
+
+  VrKtx2TextureStats copyWith({
+    String? hardwareFormatLabel,
+    bool? manualMipsSupported,
+    int? ktx2UploadedCount,
+    int? ktx2MipLevelsUploaded,
+    int? fallbackRgbaCount,
+    int? toksvigMaterialsCount,
+    int? estimatedVramBytes,
+    int? estimatedUncompressedVramBytes,
+    String? lastFallbackError,
+  }) => VrKtx2TextureStats(
+    hardwareFormatLabel: hardwareFormatLabel ?? this.hardwareFormatLabel,
+    manualMipsSupported: manualMipsSupported ?? this.manualMipsSupported,
+    ktx2UploadedCount: ktx2UploadedCount ?? this.ktx2UploadedCount,
+    ktx2MipLevelsUploaded: ktx2MipLevelsUploaded ?? this.ktx2MipLevelsUploaded,
+    fallbackRgbaCount: fallbackRgbaCount ?? this.fallbackRgbaCount,
+    toksvigMaterialsCount: toksvigMaterialsCount ?? this.toksvigMaterialsCount,
+    estimatedVramBytes: estimatedVramBytes ?? this.estimatedVramBytes,
+    estimatedUncompressedVramBytes:
+        estimatedUncompressedVramBytes ?? this.estimatedUncompressedVramBytes,
+    lastFallbackError: lastFallbackError ?? this.lastFallbackError,
+  );
+}
+
 /// Public-API GPU uploader for Khronos KTX 2.0 textures (`UASTC`, `ETC1S`, and
 /// [VrKtx2Codec] `universal/1` block payloads).
 ///
@@ -1077,11 +1328,98 @@ abstract final class VrKtx2TextureLoader {
   // Minimal 3-vertex degenerate triangle (36 bytes float32 vec3) so the carrier
   // glTF satisfies accessor rules with negligible overhead.
   static final Uint8List _carrierGeometryBin = Uint8List(36);
+  static bool _loggedHardwareCaps = false;
+
+  /// Live runtime telemetry for Settings & performance HUD.
+  static final ValueNotifier<VrKtx2TextureStats> stats =
+      ValueNotifier<VrKtx2TextureStats>(const VrKtx2TextureStats.initial());
 
   /// Extracts the underlying [gpu.Texture] handle from any [TextureSource]
   /// (`Texture2D` or `GpuTextureSource`) when ready.
   static gpu.Texture? gpuTextureOf(TextureSource? source) =>
       source?.sampledTexture;
+
+  /// Inspects an actual uploaded [gpu.Texture] handle to report the exact
+  /// native GPU pixel format (`ASTC 4×4`, `BC1/BC3`, `ETC2`, or `RGBA8`) and
+  /// real uploaded mip level count without touching private engine APIs.
+  static ({String formatLabel, bool isCompressed, int mipLevels, int vramBytes})
+  inspectUploadedTexture(gpu.Texture tex, VrKtx2HeaderInfo header) {
+    final fmtName = tex.format.name.toLowerCase();
+    final String label;
+    final bool isCompressed;
+    if (fmtName.contains('astc')) {
+      label = 'ASTC 4×4';
+      isCompressed = true;
+    } else if (fmtName.contains('bc1') || fmtName.contains('bc3')) {
+      label = 'BC1/BC3';
+      isCompressed = true;
+    } else if (fmtName.contains('etc2')) {
+      label = 'ETC2';
+      isCompressed = true;
+    } else {
+      label = 'RGBA8';
+      isCompressed = false;
+    }
+    final mips = tex.mipLevelCount > 0 ? tex.mipLevelCount : 1;
+    var vramBytes = 0;
+    try {
+      for (var m = 0; m < mips; m++) {
+        vramBytes += tex.getMipLevelSizeInBytes(m);
+      }
+    } on Object {
+      vramBytes = isCompressed
+          ? header.estimatedGpuVramBytes
+          : (header.estimatedUncompressedVramBytes > 0
+                ? header.estimatedUncompressedVramBytes
+                : header.estimatedGpuVramBytes * 4);
+    }
+    if (vramBytes <= 0) {
+      vramBytes = isCompressed
+          ? header.estimatedGpuVramBytes
+          : header.estimatedGpuVramBytes * 4;
+    }
+    if (!_loggedHardwareCaps) {
+      _loggedHardwareCaps = true;
+      debugPrint(
+        'VRlizate KTX2 GPU active: $label '
+        '(rawFormat=${tex.format.name} mips=$mips ${tex.width}x${tex.height} '
+        'vramBytes=$vramBytes)',
+      );
+    }
+    return (
+      formatLabel: label,
+      isCompressed: isCompressed,
+      mipLevels: mips,
+      vramBytes: vramBytes,
+    );
+  }
+
+  /// Records a Toksvig-filtered material upload for live telemetry.
+  static void recordToksvigMaterial() {
+    final cur = stats.value;
+    stats.value = cur.copyWith(
+      toksvigMaterialsCount: cur.toksvigMaterialsCount + 1,
+    );
+  }
+
+  /// Records a graceful RGBA8 fallback so failures are never silently masked.
+  static void recordFallback(Object error, {int uncompressedBytes = 0}) {
+    debugPrint('VRlizate KTX2 fallback to RGBA8: $error');
+    final cur = stats.value;
+    stats.value = cur.copyWith(
+      fallbackRgbaCount: cur.fallbackRgbaCount + 1,
+      estimatedVramBytes: cur.estimatedVramBytes + uncompressedBytes,
+      estimatedUncompressedVramBytes:
+          cur.estimatedUncompressedVramBytes + uncompressedBytes,
+      lastFallbackError: error.toString(),
+    );
+  }
+
+  @visibleForTesting
+  static void resetStatsForTesting() {
+    _loggedHardwareCaps = false;
+    stats.value = const VrKtx2TextureStats.initial();
+  }
 
   /// Transcodes and uploads [requests] in a single batched isolate hop.
   static Future<List<GpuTextureSource>> loadBatch(
@@ -1089,6 +1427,7 @@ abstract final class VrKtx2TextureLoader {
     int? maxTextureSize,
   }) async {
     if (requests.isEmpty) return const <GpuTextureSource>[];
+    final headers = <VrKtx2HeaderInfo>[];
     for (final req in requests) {
       final info = VrKtx2Codec.inspectKtx2Header(req.bytes);
       if (!info.isSupportedRuntime2dTexture) {
@@ -1097,6 +1436,7 @@ abstract final class VrKtx2TextureLoader {
           'vk=${info.vkFormat}, faces=${info.faceCount}).',
         );
       }
+      headers.add(info);
     }
 
     final uriMap = <String, Uint8List>{'geom.bin': _carrierGeometryBin};
@@ -1200,6 +1540,12 @@ abstract final class VrKtx2TextureLoader {
     }
 
     final out = <GpuTextureSource>[];
+    var batchVram = 0;
+    var batchUncompressed = 0;
+    var batchMips = 0;
+    var resolvedFormatLabel = stats.value.hardwareFormatLabel;
+    var manualMips = stats.value.manualMipsSupported;
+
     for (var i = 0; i < requests.length; i++) {
       final mat = importedPrims[i].material as PhysicallyBasedMaterial;
       final source = switch (requests[i].content) {
@@ -1211,6 +1557,15 @@ abstract final class VrKtx2TextureLoader {
       if (gpuTex == null) {
         throw const FormatException('KTX2 texture resolved to null GPU handle.');
       }
+      final info = headers[i];
+      final inspected = inspectUploadedTexture(gpuTex, info);
+      resolvedFormatLabel = inspected.formatLabel;
+      if (inspected.mipLevels > 1) manualMips = true;
+      batchVram += inspected.vramBytes;
+      batchMips += inspected.mipLevels;
+      batchUncompressed += info.estimatedUncompressedVramBytes > 0
+          ? info.estimatedUncompressedVramBytes
+          : info.estimatedGpuVramBytes * 4;
       out.add(
         GpuTextureSource(
           gpuTex,
@@ -1218,6 +1573,17 @@ abstract final class VrKtx2TextureLoader {
         ),
       );
     }
+
+    final cur = stats.value;
+    stats.value = cur.copyWith(
+      hardwareFormatLabel: resolvedFormatLabel,
+      manualMipsSupported: manualMips,
+      ktx2UploadedCount: cur.ktx2UploadedCount + headers.length,
+      ktx2MipLevelsUploaded: cur.ktx2MipLevelsUploaded + batchMips,
+      estimatedVramBytes: cur.estimatedVramBytes + batchVram,
+      estimatedUncompressedVramBytes:
+          cur.estimatedUncompressedVramBytes + batchUncompressed,
+    );
     return out;
   }
 
