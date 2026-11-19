@@ -25,6 +25,10 @@ final class VrAvatarMotionFrame {
   late double _leftClavicleZ;
   late double _rightClavicleY;
   late double _rightClavicleZ;
+  late double _leftLegSwing;
+  late double _rightLegSwing;
+  late double _leftFootLift;
+  late double _rightFootLift;
   late double _eyeScaleY;
   late double _leftFeat;
   late double _rightFeat;
@@ -78,6 +82,12 @@ final class VrAvatarMotionFrame {
       abduction: _rightAbd,
       heightMeters: heightMeters,
     );
+    _leftLegSwing = (pose?.leftLegSwing ?? 0.0).clamp(-1.05, 1.05);
+    _rightLegSwing = (pose?.rightLegSwing ?? 0.0).clamp(-1.05, 1.05);
+    _leftFootLift =
+        math.max(0.0, math.sin(_leftLegSwing)) * 0.022 * heightMeters;
+    _rightFootLift =
+        math.max(0.0, math.sin(_rightLegSwing)) * 0.022 * heightMeters;
     _eyeScaleY = pose?.eyeScaleY ?? 1.0;
     _leftFeat = math.sin(time * 3.2) * .065 * idleScale;
     _rightFeat = math.sin(time * 3.2 + .9) * .065 * idleScale;
@@ -146,6 +156,24 @@ final class VrAvatarMotionFrame {
           )
           ..rotateZ(_rightAbd)
           ..rotateX(-_rightFlex)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.leftLeg:
+        if (_leftLegSwing.abs() < 1e-5) {
+          outTransform.setFrom(part.transform);
+          return;
+        }
+        delta
+          ..translateByDouble(p.x, p.y + _leftFootLift, p.z, 1)
+          ..rotateX(-_leftLegSwing)
+          ..translateByDouble(-p.x, -p.y, -p.z, 1);
+      case VrAvatarMotion.rightLeg:
+        if (_rightLegSwing.abs() < 1e-5) {
+          outTransform.setFrom(part.transform);
+          return;
+        }
+        delta
+          ..translateByDouble(p.x, p.y + _rightFootLift, p.z, 1)
+          ..rotateX(-_rightLegSwing)
           ..translateByDouble(-p.x, -p.y, -p.z, 1);
       case VrAvatarMotion.leftFeature:
         delta

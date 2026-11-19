@@ -123,5 +123,86 @@ void main() {
       expect(stage.articulatedPeerCount, 2); // capped at maxArticulatedPeers=2!
       stage.dispose();
     });
+
+    test('enables per-instance vertex colors and prioritizes closest peers for articulation', () {
+      expect(VrPeerAvatarStage.sharedMaterialVertexColorWeight, 1.0);
+      final stage = VrPeerAvatarStage(
+        maxPeers: 16,
+        maxVisibleDistance: 25.0,
+        articulateDistance: 14.0,
+        maxArticulatedPeers: 2,
+      );
+      final appearance = VrAvatarAppearance(
+        species: VrAvatarSpecies.human,
+        bodyColorArgb: 0xFF2E86DE,
+        accentColorArgb: 0xFF7EF0DD,
+      );
+
+      // Register far peers FIRST so array order would starve the close peer
+      // if nearest-first prioritization regressed.
+      stage.upsertPeer(
+        VrPeerAvatarSnapshot(
+          peerId: 'far_1',
+          appearance: appearance,
+          x: 0.0,
+          z: -11.0,
+          yaw: 0.0,
+        ),
+      );
+      stage.upsertPeer(
+        VrPeerAvatarSnapshot(
+          peerId: 'far_2',
+          appearance: appearance,
+          x: 1.0,
+          z: -10.5,
+          yaw: 0.0,
+        ),
+      );
+      stage.upsertPeer(
+        VrPeerAvatarSnapshot(
+          peerId: 'closest_hero',
+          appearance: appearance,
+          x: 0.0,
+          z: -2.0,
+          yaw: 0.0,
+          pose: VrAvatarPose.walk(1.1, amplitude: 0.65),
+        ),
+      );
+
+      stage.tick(
+        1 / 60,
+        eyePosition: vm.Vector3(0, 1.6, 0),
+        viewerForward: vm.Vector3(0, 0, -1),
+      );
+
+      expect(stage.articulatedPeerCount, 2);
+      expect(stage.isPeerArticulated('closest_hero'), isTrue);
+      expect(stage.isPeerArticulated('far_2'), isTrue);
+      expect(stage.isPeerArticulated('far_1'), isFalse);
+
+      // Verify leg parts articulate during walk poses and remain planted at rest.
+      final plan = VrAvatarPlan.build(appearance);
+      final leftLeg = plan.parts.singleWhere((p) => p.id == 'left_leg');
+      expect(leftLeg.motion, VrAvatarMotion.leftLeg);
+      final restOut = vm.Matrix4.identity();
+      final walkOut = vm.Matrix4.identity();
+      VrAvatarNode.evaluatePartTransform(
+        part: leftLeg,
+        outTransform: restOut,
+        time: 0.5,
+        heightMeters: appearance.heightMeters,
+        pose: VrAvatarPose.neutral,
+      );
+      VrAvatarNode.evaluatePartTransform(
+        part: leftLeg,
+        outTransform: walkOut,
+        time: 0.5,
+        heightMeters: appearance.heightMeters,
+        pose: VrAvatarPose.walk(1.2, amplitude: 0.65),
+      );
+      expect(restOut.storage, orderedEquals(leftLeg.transform.storage));
+      expect(walkOut.storage, isNot(orderedEquals(leftLeg.transform.storage)));
+      stage.dispose();
+    });
   });
 }

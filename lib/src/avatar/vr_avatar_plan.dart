@@ -14,6 +14,8 @@ enum VrAvatarMotion {
   head,
   leftArm,
   rightArm,
+  leftLeg,
+  rightLeg,
   leftFeature,
   rightFeature,
   crownFeature,
@@ -479,6 +481,10 @@ class _AvatarAuthor {
       final armMotion = side < 0
           ? VrAvatarMotion.leftArm
           : VrAvatarMotion.rightArm;
+      final legPivot = vm.Vector3(side * .096, .27, 0);
+      final legMotion = side < 0
+          ? VrAvatarMotion.leftLeg
+          : VrAvatarMotion.rightLeg;
 
       add(
         '${tag}_hip',
@@ -491,8 +497,8 @@ class _AvatarAuthor {
         .105,
         .136,
         nearOnly: true,
-        motion: VrAvatarMotion.ground,
-        pivot: vm.Vector3(side * .096, .27, 0),
+        motion: legMotion,
+        pivot: legPivot,
       );
       add(
         '${tag}_leg',
@@ -504,8 +510,8 @@ class _AvatarAuthor {
         .126,
         .268,
         .136,
-        motion: VrAvatarMotion.ground,
-        pivot: vm.Vector3(side * .096, .172, 0),
+        motion: legMotion,
+        pivot: legPivot,
       );
       add(
         '${tag}_foot',
@@ -517,8 +523,8 @@ class _AvatarAuthor {
         .156,
         .096,
         .23,
-        motion: VrAvatarMotion.ground,
-        pivot: vm.Vector3(side * .096, 0, .038),
+        motion: legMotion,
+        pivot: legPivot,
       );
       if (plant) {
         add(
@@ -618,8 +624,8 @@ class _AvatarAuthor {
             .068,
             .068,
             .042,
-            motion: VrAvatarMotion.ground,
-            pivot: vm.Vector3(side * .096, .165, .062),
+            motion: legMotion,
+            pivot: legPivot,
           );
         }
       }

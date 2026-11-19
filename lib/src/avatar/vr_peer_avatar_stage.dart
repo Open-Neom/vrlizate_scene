@@ -56,11 +56,19 @@ class VrPeerAvatarStage {
   VrPeerAvatarStage({
     this.maxPeers = 32,
     this.maxVisibleDistance = 27.0,
-    this.articulateDistance = 9.5,
-    this.maxArticulatedPeers = 4,
+    this.articulateDistance = 14.5,
+    this.maxArticulatedPeers = 8,
     this.maxExtrapolationSeconds = 0.22,
     this.smoothingRate = 11.5,
+    this.poseSmoothingRate = 10.5,
+    this.meshDetail = VrAvatarDetail.near,
   }) : assert(maxPeers >= 1 && maxPeers <= 128);
+
+  /// `flutter_scene` combines per-instance `instance_color` with vertex color
+  /// via `mix(vec4(1), v_color, vertex_color_weight)`. Keeping this at `1.0`
+  /// ensures every batched NPC/peer part renders its true PBR linear color
+  /// instead of solid white.
+  static const double sharedMaterialVertexColorWeight = 1.0;
 
   final int maxPeers;
   final double maxVisibleDistance;
@@ -68,6 +76,8 @@ class VrPeerAvatarStage {
   final int maxArticulatedPeers;
   final double maxExtrapolationSeconds;
   final double smoothingRate;
+  final double poseSmoothingRate;
+  final VrAvatarDetail meshDetail;
 
   final fs.Node root = fs.Node(name: 'vr_peer_avatar_stage')
     ..raycastable = false
@@ -75,6 +85,7 @@ class VrPeerAvatarStage {
 
   final Map<String, _PeerRecord> _peers = {};
   final List<_PeerRecord> _peerList = [];
+  final List<_PeerRecord> _articulationCandidates = [];
   final Map<VrAvatarShape, _ShapeBatch> _shapeBatches = {};
 
   // Reusable zero-GC scratch buffers for the per-frame render loop.
@@ -108,6 +119,10 @@ class VrPeerAvatarStage {
   /// Returns the current smoothly interpolated yaw (radians) of [peerId].
   double? interpolatedYaw(String peerId) => _peers[peerId]?.renderYaw;
 
+  /// Whether [peerId] received full limb articulation on the most recent tick.
+  bool isPeerArticulated(String peerId) =>
+      _peers[peerId]?.wasArticulated ?? false;
+
   /// Mounts the 3 shared `InstancedMesh` batches onto [parent] when Flutter GPU
   /// (`Scene.isReadyToRender`) is available.
   void mountGpu(fs.Node parent) {
@@ -116,11 +131,11 @@ class VrPeerAvatarStage {
     for (final shape in VrAvatarShape.values) {
       final material = fs.PhysicallyBasedMaterial()
         ..baseColorFactor = vm.Vector4(1, 1, 1, 1)
-        ..vertexColorWeight = 0.0
-        ..roughnessFactor = 0.56
-        ..metallicFactor = 0.04;
+        ..vertexColorWeight = sharedMaterialVertexColorWeight
+        ..roughnessFactor = 0.50
+        ..metallicFactor = 0.06;
       final mesh = fs.InstancedMesh(
-        geometry: VrAvatarGeometryCache.geometry(shape, VrAvatarDetail.far),
+        geometry: VrAvatarGeometryCache.geometry(shape, meshDetail),
         material: material,
         cullInstances: false,
       );
@@ -232,6 +247,7 @@ class VrPeerAvatarStage {
     if (_peerList.isEmpty) return;
     _peers.clear();
     _peerList.clear();
+    _articulationCandidates.clear();
     _slotsDirty = true;
   }
 
@@ -270,8 +286,9 @@ class VrPeerAvatarStage {
 
     var visibleCount = 0;
     var articulatedCount = 0;
+    _articulationCandidates.clear();
 
-    // 1. Advance smooth kinematics & classify visibility/LOD for all peers.
+    // 1. Advance smooth kinematics & classify visibility/distance for all peers.
     for (var i = 0; i < _peerList.length; i++) {
       final p = _peerList[i];
       p.ageSinceSnapshot += clampedDt;
@@ -289,7 +306,7 @@ class VrPeerAvatarStage {
       p.renderZ += (predZ - p.renderZ) * alpha;
       p.renderYaw = _lerpAngle(p.renderYaw, p.targetYaw, alpha);
 
-      final movedRoot =
+      p.movedRootThisFrame =
           (p.renderX - prevX).abs() > 4e-4 ||
           (p.renderY - prevY).abs() > 4e-4 ||
           (p.renderZ - prevZ).abs() > 4e-4 ||
@@ -315,6 +332,7 @@ class VrPeerAvatarStage {
 
       p.currentlyVisible = visible;
       p.currentDistSq = distSq;
+      p.shouldArticulateThisFrame = false;
       if (!visible) {
         if (!p.wasCulled) {
           p.needsGpuWrite = true;
@@ -326,19 +344,51 @@ class VrPeerAvatarStage {
       }
 
       visibleCount++;
-      final shouldArticulate =
-          distSq <= artDistSq && articulatedCount < maxArticulatedPeers;
+      if (distSq <= artDistSq) {
+        _articulationCandidates.add(p);
+      }
+    }
+
+    // 1b. Prioritize the closest visible peers for limb articulation (zero-GC
+    // in-place insertion sort) so distant NPCs never steal slots from nearby
+    // visitors standing right in front of the player.
+    for (var i = 1; i < _articulationCandidates.length; i++) {
+      final key = _articulationCandidates[i];
+      var j = i - 1;
+      while (j >= 0 &&
+          _articulationCandidates[j].currentDistSq > key.currentDistSq) {
+        _articulationCandidates[j + 1] = _articulationCandidates[j];
+        j--;
+      }
+      _articulationCandidates[j + 1] = key;
+    }
+    final budget = math.min(maxArticulatedPeers, _articulationCandidates.length);
+    for (var i = 0; i < budget; i++) {
+      _articulationCandidates[i].shouldArticulateThisFrame = true;
+    }
+    articulatedCount = budget;
+
+    // 1c. Apply smooth damped limb articulation (30 Hz) or rigid rest LOD.
+    for (var i = 0; i < _peerList.length; i++) {
+      final p = _peerList[i];
+      if (!p.currentlyVisible) continue;
+      final shouldArticulate = p.shouldArticulateThisFrame;
       if (shouldArticulate) {
-        articulatedCount++;
         p.limbAccum += clampedDt;
-        // Evaluate limb trigonometry at a crisp 30 Hz while root glides at 60-120 Hz.
         if (p.limbAccum >= (1.0 / 30.0) || p.poseDirty || p.wasCulled) {
+          final limbDt = math.max(p.limbAccum, clampedDt);
           p.limbAccum = 0.0;
           p.poseDirty = false;
+          final poseAlpha = 1.0 - math.exp(-poseSmoothingRate * limbDt);
+          p.smoothedPose = VrAvatarPose.lerp(
+            p.smoothedPose,
+            p.pose ?? VrAvatarPose.neutral,
+            poseAlpha,
+          );
           _evaluateLocalLimbs(p, _clock + p.phaseOffset);
           p.needsGpuWrite = true;
         } else {
-          p.needsGpuWrite = movedRoot;
+          p.needsGpuWrite = p.movedRootThisFrame;
         }
       } else {
         if (p.wasArticulated) {
@@ -346,7 +396,7 @@ class VrPeerAvatarStage {
           p.wasArticulated = false;
           p.needsGpuWrite = true;
         } else {
-          p.needsGpuWrite = movedRoot || p.wasCulled;
+          p.needsGpuWrite = p.movedRootThisFrame || p.wasCulled;
         }
       }
       p.wasCulled = false;
@@ -413,6 +463,7 @@ class VrPeerAvatarStage {
     _shapeBatches.clear();
     _peers.clear();
     _peerList.clear();
+    _articulationCandidates.clear();
     root.detach();
   }
 
@@ -421,7 +472,7 @@ class VrPeerAvatarStage {
       time: t,
       heightMeters: peer.appearance.heightMeters,
       animateIdle: true,
-      pose: peer.pose,
+      pose: peer.smoothedPose,
     );
     for (var i = 0; i < peer.slots.length; i++) {
       final slot = peer.slots[i];
@@ -549,10 +600,11 @@ final class _PeerRecord {
        targetY = y,
        targetZ = z,
        targetYaw = yaw,
-       renderX = x,
+        renderX = x,
        renderY = y,
        renderZ = z,
-       renderYaw = yaw {
+       renderYaw = yaw,
+       smoothedPose = pose ?? VrAvatarPose.neutral {
     _rebuildPlan();
   }
 
@@ -574,6 +626,7 @@ final class _PeerRecord {
   double renderYaw;
 
   VrAvatarPose? pose;
+  VrAvatarPose smoothedPose;
   int? lastSequence;
   double ageSinceSnapshot = 0.0;
   double limbAccum = 1.0;
@@ -583,6 +636,8 @@ final class _PeerRecord {
   bool wasCulled = false;
   bool wasArticulated = false;
   bool needsGpuWrite = true;
+  bool movedRootThisFrame = false;
+  bool shouldArticulateThisFrame = false;
 
   VrAvatarAppearance get appearance => _appearance;
 

@@ -64,6 +64,12 @@ void evaluateLegacyAvatarPartTransform({
     abduction: rightAbd,
     heightMeters: heightMeters,
   );
+  final leftLegSwing = (pose?.leftLegSwing ?? 0.0).clamp(-1.05, 1.05);
+  final rightLegSwing = (pose?.rightLegSwing ?? 0.0).clamp(-1.05, 1.05);
+  final leftFootLift =
+      math.max(0.0, math.sin(leftLegSwing)) * 0.022 * heightMeters;
+  final rightFootLift =
+      math.max(0.0, math.sin(rightLegSwing)) * 0.022 * heightMeters;
   final eyeScaleY = pose?.eyeScaleY ?? 1.0;
   final leftFeat = math.sin(time * 3.2) * .065 * idleScale;
   final rightFeat = math.sin(time * 3.2 + .9) * .065 * idleScale;
@@ -119,6 +125,24 @@ void evaluateLegacyAvatarPartTransform({
         )
         ..rotateZ(rightAbd)
         ..rotateX(-rightFlex)
+        ..translateByDouble(-p.x, -p.y, -p.z, 1);
+    case VrAvatarMotion.leftLeg:
+      if (leftLegSwing.abs() < 1e-5) {
+        outTransform.setFrom(part.transform);
+        return;
+      }
+      delta
+        ..translateByDouble(p.x, p.y + leftFootLift, p.z, 1)
+        ..rotateX(-leftLegSwing)
+        ..translateByDouble(-p.x, -p.y, -p.z, 1);
+    case VrAvatarMotion.rightLeg:
+      if (rightLegSwing.abs() < 1e-5) {
+        outTransform.setFrom(part.transform);
+        return;
+      }
+      delta
+        ..translateByDouble(p.x, p.y + rightFootLift, p.z, 1)
+        ..rotateX(-rightLegSwing)
         ..translateByDouble(-p.x, -p.y, -p.z, 1);
     case VrAvatarMotion.leftFeature:
       delta
