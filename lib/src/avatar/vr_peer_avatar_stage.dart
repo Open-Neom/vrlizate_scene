@@ -95,6 +95,7 @@ class VrPeerAvatarStage {
   static final vm.Matrix4 _hiddenMatrix = vm.Matrix4.zero();
 
   bool _gpuMounted = false;
+  bool _shadowsEnabled = false;
   bool _slotsDirty = false;
   bool _disposed = false;
   double _clock = 0.0;
@@ -123,17 +124,46 @@ class VrPeerAvatarStage {
   bool isPeerArticulated(String peerId) =>
       _peers[peerId]?.wasArticulated ?? false;
 
+  /// Enables or disables real directional shadow casting for all batched
+  /// peers/NPCs (enabled on `high`/`ultra` tiers so avatars cast grounded
+  /// shadows on the architectural floor).
+  void setShadowsEnabled(bool enabled) {
+    if (_shadowsEnabled == enabled) return;
+    _shadowsEnabled = enabled;
+    final mode = enabled
+        ? fs.ShadowCastingMode.on
+        : fs.ShadowCastingMode.off;
+    root.shadowCastingMode = mode;
+    for (final batch in _shapeBatches.values) {
+      batch.node.shadowCastingMode = mode;
+    }
+  }
+
   /// Mounts the 3 shared `InstancedMesh` batches onto [parent] when Flutter GPU
   /// (`Scene.isReadyToRender`) is available.
   void mountGpu(fs.Node parent) {
     if (_disposed || _gpuMounted || !fs.Scene.isReadyToRender) return;
     _gpuMounted = true;
+    final shadowMode = _shadowsEnabled
+        ? fs.ShadowCastingMode.on
+        : fs.ShadowCastingMode.off;
+    root.shadowCastingMode = shadowMode;
     for (final shape in VrAvatarShape.values) {
+      // Tune PBR response per geometric primitive family while keeping <= 3
+      // instanced batches total:
+      // - round: soft velvety matte-satin for skin, organic forms & textiles
+      // - softBox: crisp architectural satin-metal for robot plating & trim
+      // - petal: luminous refined finish for crests, foliage & emblems
+      final (roughness, metallic) = switch (shape) {
+        VrAvatarShape.round => (0.68, 0.02),
+        VrAvatarShape.softBox => (0.34, 0.28),
+        VrAvatarShape.petal => (0.28, 0.36),
+      };
       final material = fs.PhysicallyBasedMaterial()
         ..baseColorFactor = vm.Vector4(1, 1, 1, 1)
         ..vertexColorWeight = sharedMaterialVertexColorWeight
-        ..roughnessFactor = 0.50
-        ..metallicFactor = 0.06;
+        ..roughnessFactor = roughness
+        ..metallicFactor = metallic;
       final mesh = fs.InstancedMesh(
         geometry: VrAvatarGeometryCache.geometry(shape, meshDetail),
         material: material,
@@ -141,7 +171,7 @@ class VrPeerAvatarStage {
       );
       final node = fs.Node(name: 'vr_peer_batch_${shape.name}')
         ..raycastable = false
-        ..shadowCastingMode = fs.ShadowCastingMode.off
+        ..shadowCastingMode = shadowMode
         ..addComponent(fs.InstancedMeshComponent(mesh));
       root.add(node);
       _shapeBatches[shape] = _ShapeBatch(node: node, mesh: mesh);
@@ -194,6 +224,7 @@ class VrPeerAvatarStage {
     final record = _PeerRecord(
       peerId: snapshot.peerId,
       appearance: snapshot.appearance,
+      detail: meshDetail,
       x: snapshot.x,
       y: snapshot.y,
       z: snapshot.z,
@@ -586,6 +617,7 @@ final class _PeerRecord {
   _PeerRecord({
     required this.peerId,
     required VrAvatarAppearance appearance,
+    required this.detail,
     required double x,
     required double y,
     required double z,
@@ -600,7 +632,7 @@ final class _PeerRecord {
        targetY = y,
        targetZ = z,
        targetYaw = yaw,
-        renderX = x,
+       renderX = x,
        renderY = y,
        renderZ = z,
        renderYaw = yaw,
@@ -609,6 +641,7 @@ final class _PeerRecord {
   }
 
   final String peerId;
+  final VrAvatarDetail detail;
   final double phaseOffset;
   VrAvatarAppearance _appearance;
   final List<_PartSlot> slots = [];
@@ -656,17 +689,123 @@ final class _PeerRecord {
     slots.clear();
     final plan = VrAvatarPlan.build(_appearance);
     final palette = _surfaceColorsFor(_appearance);
-    for (final part in plan.partsFor(VrAvatarDetail.far)) {
+    final isHuman = _appearance.species == VrAvatarSpecies.human;
+    final seed = _stableSeed(peerId, _appearance.bodyColorArgb);
+    final skin = isHuman ? _humanSkinTone(seed) : null;
+    final skinShade = skin == null
+        ? null
+        : vm.Vector4(skin.x * 0.80, skin.y * 0.74, skin.z * 0.72, 1.0);
+    final hair = isHuman ? _humanHairTone(seed) : null;
+    final trousers = isHuman ? _humanTrouserTone(seed) : null;
+    final shoes = isHuman ? _humanShoeTone(seed) : null;
+
+    for (final part in plan.partsFor(detail)) {
       // Skip flat pedestal contact-shadow discs in shared crowd batches to
       // avoid coplanar floor z-fighting and halve ground overdraw.
       if (part.surface == VrAvatarSurface.shadow) continue;
-      slots.add(
-        _PartSlot(
-          part: part,
-          color: palette[part.surface]!,
-        ),
-      );
+      final color = isHuman
+          ? _resolveHumanPartColor(
+              part: part,
+              palette: palette,
+              skin: skin!,
+              skinShade: skinShade!,
+              hair: hair!,
+              trousers: trousers!,
+              shoes: shoes!,
+            )
+          : palette[part.surface]!;
+      slots.add(_PartSlot(part: part, color: color));
     }
+  }
+
+  static int _stableSeed(String id, int argb) {
+    var h = argb ^ 0x517CC1B7;
+    for (var i = 0; i < id.length; i++) {
+      h = ((h * 31) ^ id.codeUnitAt(i)) & 0x7FFFFFFF;
+    }
+    return h;
+  }
+
+  static const _skinPalettesArgb = <int>[
+    0xFFF0C9AE, // warm ivory
+    0xFFE5B594, // natural peach-olive
+    0xFFD49D76, // golden mediterranean tan
+    0xFFBD8058, // warm caramel
+    0xFF965E3D, // rich bronze
+    0xFF6B412A, // deep warm umber
+  ];
+
+  static const _hairPalettesArgb = <int>[
+    0xFF231B18, // natural raven espresso
+    0xFF3E291D, // rich dark chestnut
+    0xFF5A3724, // warm walnut brown
+    0xFF6B3A26, // deep auburn
+    0xFF8C6E4B, // warm dark honey-blonde
+    0xFF6F767F, // architectural silver-slate
+  ];
+
+  static const _trouserPalettesArgb = <int>[
+    0xFF282E36, // tailored charcoal
+    0xFF243144, // deep architectural navy
+    0xFF423D36, // warm dark taupe
+    0xFF333D35, // muted slate olive
+  ];
+
+  static const _shoePalettesArgb = <int>[
+    0xFF261E1A, // espresso leather
+    0xFF1F242B, // matte obsidian sneaker
+    0xFF3A2B22, // chestnut suede
+  ];
+
+  static vm.Vector4 _humanSkinTone(int seed) =>
+      vrAvatarLinearArgb(_skinPalettesArgb[seed % _skinPalettesArgb.length]);
+
+  static vm.Vector4 _humanHairTone(int seed) => vrAvatarLinearArgb(
+    _hairPalettesArgb[(seed >> 3) % _hairPalettesArgb.length],
+  );
+
+  static vm.Vector4 _humanTrouserTone(int seed) => vrAvatarLinearArgb(
+    _trouserPalettesArgb[(seed >> 6) % _trouserPalettesArgb.length],
+  );
+
+  static vm.Vector4 _humanShoeTone(int seed) => vrAvatarLinearArgb(
+    _shoePalettesArgb[(seed >> 9) % _shoePalettesArgb.length],
+  );
+
+  static vm.Vector4 _resolveHumanPartColor({
+    required VrAvatarPart part,
+    required Map<VrAvatarSurface, vm.Vector4> palette,
+    required vm.Vector4 skin,
+    required vm.Vector4 skinShade,
+    required vm.Vector4 hair,
+    required vm.Vector4 trousers,
+    required vm.Vector4 shoes,
+  }) {
+    final id = part.id;
+    if (id == 'head' ||
+        id == 'neck' ||
+        id == 'nose' ||
+        id == 'left_hand' ||
+        id == 'right_hand' ||
+        id.startsWith('ear_-') ||
+        id.startsWith('ear_1')) {
+      return skin;
+    }
+    if (id.startsWith('ear_inner_')) {
+      return skinShade;
+    }
+    if (id == 'hair_cap' || id == 'hair_fringe' || id.startsWith('brow_')) {
+      return hair;
+    }
+    if (id == 'pelvis' ||
+        id.endsWith('_hip') ||
+        id.endsWith('_leg')) {
+      return trousers;
+    }
+    if (id.endsWith('_foot')) {
+      return shoes;
+    }
+    return palette[part.surface]!;
   }
 
   static Map<VrAvatarSurface, vm.Vector4> _surfaceColorsFor(
