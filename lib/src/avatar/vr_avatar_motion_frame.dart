@@ -42,6 +42,10 @@ final class VrAvatarMotionFrame {
     required double heightMeters,
     bool animateIdle = true,
     VrAvatarPose? pose,
+    double extraHeadYaw = 0.0,
+    double extraHeadPitch = 0.0,
+    double extraBodyYaw = 0.0,
+    double? overrideEyeScaleY,
   }) {
     final idleScale = animateIdle ? 1.0 : 0.0;
     final breathWave = math.sin(time * 2.1);
@@ -51,10 +55,18 @@ final class VrAvatarMotionFrame {
         (pose?.bob ?? 0.0) -
         sitOffset;
     _bodyPitch = (breathWave * .018 * idleScale) + (pose?.lean ?? 0.0);
-    _bodyYaw = (math.sin(time * 1.05) * .022 * idleScale) + (pose?.turn ?? 0.0);
-    _headYaw = (math.sin(time * 1.35) * .048 * idleScale) + (pose?.look ?? 0.0);
+    _bodyYaw =
+        (math.sin(time * 1.05) * .022 * idleScale) +
+        (pose?.turn ?? 0.0) +
+        extraBodyYaw;
+    _headYaw =
+        (math.sin(time * 1.35) * .048 * idleScale) +
+        (pose?.look ?? 0.0) +
+        extraHeadYaw;
     _headPitch =
-        (math.sin(time * 2.1 + .6) * .028 * idleScale) + (pose?.nod ?? 0.0);
+        (math.sin(time * 2.1 + .6) * .028 * idleScale) +
+        (pose?.nod ?? 0.0) +
+        extraHeadPitch;
     _headRoll =
         (math.cos(time * 1.35) * .022 * idleScale) + (pose?.tilt ?? 0.0);
     final armSwing = breathWave * .038 * idleScale;
@@ -88,7 +100,10 @@ final class VrAvatarMotionFrame {
         math.max(0.0, math.sin(_leftLegSwing)) * 0.022 * heightMeters;
     _rightFootLift =
         math.max(0.0, math.sin(_rightLegSwing)) * 0.022 * heightMeters;
-    _eyeScaleY = pose?.eyeScaleY ?? 1.0;
+    final poseEye = pose?.eyeScaleY ?? 1.0;
+    _eyeScaleY = overrideEyeScaleY == null
+        ? poseEye
+        : math.min(poseEye, overrideEyeScaleY.clamp(0.08, 1.0));
     _leftFeat = math.sin(time * 3.2) * .065 * idleScale;
     _rightFeat = math.sin(time * 3.2 + .9) * .065 * idleScale;
     _crownSway = math.sin(time * 2.6) * .055 * idleScale;

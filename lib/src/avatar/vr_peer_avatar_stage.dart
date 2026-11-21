@@ -25,6 +25,7 @@ class VrPeerAvatarSnapshot {
     this.vx = 0.0,
     this.vz = 0.0,
     this.pose,
+    this.lookAtTarget,
     this.sequence,
     this.timestampSeconds = 0.0,
   });
@@ -38,6 +39,11 @@ class VrPeerAvatarSnapshot {
   final double vx;
   final double vz;
   final VrAvatarPose? pose;
+
+  /// Optional explicit world-space gaze target (e.g. a conversing partner's
+  /// head). When omitted, nearby articulated peers naturally glance toward the
+  /// player's `eyePosition` within an anatomical forward vision cone.
+  final vm.Vector3? lookAtTarget;
 
   /// Optional uint16/int packet sequence. Older out-of-order packets are ignored.
   final int? sequence;
@@ -61,6 +67,9 @@ class VrPeerAvatarStage {
     this.maxExtrapolationSeconds = 0.22,
     this.smoothingRate = 11.5,
     this.poseSmoothingRate = 10.5,
+    this.enableHeadLookAt = true,
+    this.lookAtDistance = 7.2,
+    this.lookAtSmoothingRate = 6.5,
     this.meshDetail = VrAvatarDetail.near,
   }) : assert(maxPeers >= 1 && maxPeers <= 128);
 
@@ -70,6 +79,12 @@ class VrPeerAvatarStage {
   /// instead of solid white.
   static const double sharedMaterialVertexColorWeight = 1.0;
 
+  /// Anatomical head-turn comfort bounds for social Look-At IK.
+  static const double maxLookAtYawRadians = 0.62; // ~35.5°
+  static const double maxLookAtUpPitchRadians = 0.34; // ~19.5° upward
+  static const double maxLookAtDownPitchRadians = 0.30; // ~17.2° downward
+  static const double lookAtVisionHalfConeRadians = 1.26; // ~72° each side
+
   final int maxPeers;
   final double maxVisibleDistance;
   final double articulateDistance;
@@ -77,6 +92,9 @@ class VrPeerAvatarStage {
   final double maxExtrapolationSeconds;
   final double smoothingRate;
   final double poseSmoothingRate;
+  final bool enableHeadLookAt;
+  final double lookAtDistance;
+  final double lookAtSmoothingRate;
   final VrAvatarDetail meshDetail;
 
   final fs.Node root = fs.Node(name: 'vr_peer_avatar_stage')
@@ -123,6 +141,19 @@ class VrPeerAvatarStage {
   /// Whether [peerId] received full limb articulation on the most recent tick.
   bool isPeerArticulated(String peerId) =>
       _peers[peerId]?.wasArticulated ?? false;
+
+  /// Current smoothly damped social Look-At head yaw (radians) for [peerId].
+  double? peerLookAtYaw(String peerId) => _peers[peerId]?.lookAtYaw;
+
+  /// Current smoothly damped social Look-At head pitch (radians) for [peerId].
+  /// Negative values tilt the head upward (`+Y`), positive values downward.
+  double? peerLookAtPitch(String peerId) => _peers[peerId]?.lookAtPitch;
+
+  /// Current smoothed horizontal speed (m/s) used for automatic remote gait.
+  double? peerSmoothedSpeed(String peerId) => _peers[peerId]?.smoothedSpeed;
+
+  /// Current bipedal walk-cycle phase (radians) for [peerId].
+  double? peerWalkPhase(String peerId) => _peers[peerId]?.walkPhase;
 
   /// Enables or disables real directional shadow casting for all batched
   /// peers/NPCs (enabled on `high`/`ultra` tiers so avatars cast grounded
@@ -209,6 +240,7 @@ class VrPeerAvatarStage {
       existing.vx = snapshot.vx;
       existing.vz = snapshot.vz;
       existing.pose = snapshot.pose;
+      existing.setExplicitLookAt(snapshot.lookAtTarget);
       existing.ageSinceSnapshot = 0.0;
       existing.poseDirty = true;
       if (teleported) {
@@ -232,6 +264,7 @@ class VrPeerAvatarStage {
       vx: snapshot.vx,
       vz: snapshot.vz,
       pose: snapshot.pose,
+      lookAtTarget: snapshot.lookAtTarget,
       lastSequence: snapshot.sequence,
       phaseOffset: (_peerList.length * 0.83) % (math.pi * 2),
     );
@@ -252,6 +285,7 @@ class VrPeerAvatarStage {
     double vx = 0.0,
     double vz = 0.0,
     VrAvatarPose? pose,
+    vm.Vector3? lookAtTarget,
   }) {
     final rec = _peers[peerId];
     if (rec == null || _disposed) return;
@@ -262,6 +296,7 @@ class VrPeerAvatarStage {
     rec.vx = vx;
     rec.vz = vz;
     rec.pose = pose;
+    rec.setExplicitLookAt(lookAtTarget);
     rec.ageSinceSnapshot = 0.0;
     rec.poseDirty = true;
   }
@@ -337,10 +372,25 @@ class VrPeerAvatarStage {
       p.renderZ += (predZ - p.renderZ) * alpha;
       p.renderYaw = _lerpAngle(p.renderYaw, p.targetYaw, alpha);
 
+      final dxMoved = p.renderX - prevX;
+      final dzMoved = p.renderZ - prevZ;
+      final rootSpeed = clampedDt > 1e-5
+          ? math.sqrt(dxMoved * dxMoved + dzMoved * dzMoved) / clampedDt
+          : 0.0;
+      final snapSpeed = math.sqrt(p.vx * p.vx + p.vz * p.vz);
+      final targetSpeed = math.min(6.0, math.max(rootSpeed, snapSpeed));
+      final speedAlpha = 1.0 - math.exp(-9.0 * clampedDt);
+      p.smoothedSpeed += (targetSpeed - p.smoothedSpeed) * speedAlpha;
+      if (p.smoothedSpeed < 0.02) p.smoothedSpeed = 0.0;
+      if (p.smoothedSpeed > 0.08) {
+        p.walkPhase =
+            (p.walkPhase + p.smoothedSpeed * 3.3 * clampedDt) % (math.pi * 200);
+      }
+
       p.movedRootThisFrame =
-          (p.renderX - prevX).abs() > 4e-4 ||
+          dxMoved.abs() > 4e-4 ||
           (p.renderY - prevY).abs() > 4e-4 ||
-          (p.renderZ - prevZ).abs() > 4e-4 ||
+          dzMoved.abs() > 4e-4 ||
           _angleDiff(p.renderYaw, prevYaw).abs() > 8e-4;
 
       var visible = true;
@@ -399,7 +449,8 @@ class VrPeerAvatarStage {
     }
     articulatedCount = budget;
 
-    // 1c. Apply smooth damped limb articulation (30 Hz) or rigid rest LOD.
+    // 1c. Apply smooth damped limb articulation (30 Hz), social Look-At Head
+    // IK, automatic velocity-driven remote stride, or rigid rest LOD.
     for (var i = 0; i < _peerList.length; i++) {
       final p = _peerList[i];
       if (!p.currentlyVisible) continue;
@@ -410,10 +461,11 @@ class VrPeerAvatarStage {
           final limbDt = math.max(p.limbAccum, clampedDt);
           p.limbAccum = 0.0;
           p.poseDirty = false;
+          _updateHeadLookAt(p, limbDt, eyePosition);
           final poseAlpha = 1.0 - math.exp(-poseSmoothingRate * limbDt);
           p.smoothedPose = VrAvatarPose.lerp(
             p.smoothedPose,
-            p.pose ?? VrAvatarPose.neutral,
+            _resolveDesiredPose(p),
             poseAlpha,
           );
           _evaluateLocalLimbs(p, _clock + p.phaseOffset);
@@ -423,6 +475,8 @@ class VrPeerAvatarStage {
         }
       } else {
         if (p.wasArticulated) {
+          p.lookAtYaw = 0.0;
+          p.lookAtPitch = 0.0;
           p.resetLocalToRest();
           p.wasArticulated = false;
           p.needsGpuWrite = true;
@@ -498,12 +552,100 @@ class VrPeerAvatarStage {
     root.detach();
   }
 
+  VrAvatarPose _resolveDesiredPose(_PeerRecord peer) {
+    final supplied = peer.pose;
+    if (supplied != null) {
+      final hasAuthoredLegs =
+          supplied.leftLegSwing.abs() > 1e-4 ||
+          supplied.rightLegSwing.abs() > 1e-4;
+      if (hasAuthoredLegs || supplied.sit > 0.2 || peer.smoothedSpeed <= 0.14) {
+        return supplied;
+      }
+    }
+    if (peer.smoothedSpeed > 0.14) {
+      final amplitude = (peer.smoothedSpeed / 1.45).clamp(0.18, 0.82);
+      return VrAvatarPose.walk(peer.walkPhase, amplitude: amplitude);
+    }
+    return VrAvatarPose.neutral;
+  }
+
+  void _updateHeadLookAt(
+    _PeerRecord peer,
+    double dt,
+    vm.Vector3? viewerEye,
+  ) {
+    var desiredYaw = 0.0;
+    var desiredPitch = 0.0;
+    if (enableHeadLookAt) {
+      final hasExplicit = peer.hasExplicitLookAt;
+      final tx = hasExplicit ? peer.explicitLookAtX : viewerEye?.x;
+      final ty = hasExplicit ? peer.explicitLookAtY : viewerEye?.y;
+      final tz = hasExplicit ? peer.explicitLookAtZ : viewerEye?.z;
+      if (tx != null && ty != null && tz != null) {
+        final dx = tx - peer.renderX;
+        final dz = tz - peer.renderZ;
+        final horizDistSq = dx * dx + dz * dz;
+        final maxDist = hasExplicit ? lookAtDistance * 1.5 : lookAtDistance;
+        if (horizDistSq > 0.09 && horizDistSq <= maxDist * maxDist) {
+          final targetWorldYaw = math.atan2(dx, dz);
+          final relYaw = _angleDiff(peer.renderYaw, targetWorldYaw);
+          if (relYaw.abs() <= lookAtVisionHalfConeRadians) {
+            final horizDist = math.sqrt(horizDistSq);
+            // Smooth falloff near the periphery of the natural vision cone so
+            // gaze disengages gently instead of snapping back to center.
+            final edgeT =
+                ((lookAtVisionHalfConeRadians - relYaw.abs()) / 0.35).clamp(
+                  0.0,
+                  1.0,
+                );
+            final weight = edgeT * edgeT * (3.0 - 2.0 * edgeT);
+            desiredYaw =
+                relYaw.clamp(-maxLookAtYawRadians, maxLookAtYawRadians) *
+                weight;
+            final avatarEyeY = peer.renderY + peer.appearance.heightMeters * 0.86;
+            final dy = ty - avatarEyeY;
+            // Local +Z faces forward, so Matrix4.rotateX(phi) yields
+            // y' = -sin(phi): negative pitch looks UP (+Y), positive DOWN (-Y).
+            final rawPitch = -math.atan2(dy, horizDist);
+            desiredPitch =
+                rawPitch.clamp(
+                  -maxLookAtUpPitchRadians,
+                  maxLookAtDownPitchRadians,
+                ) *
+                weight;
+          }
+        }
+      }
+    }
+    final alpha = 1.0 - math.exp(-lookAtSmoothingRate * dt);
+    peer.lookAtYaw += (desiredYaw - peer.lookAtYaw) * alpha;
+    peer.lookAtPitch += (desiredPitch - peer.lookAtPitch) * alpha;
+    if (peer.lookAtYaw.abs() < 1e-4 && desiredYaw == 0.0) peer.lookAtYaw = 0.0;
+    if (peer.lookAtPitch.abs() < 1e-4 && desiredPitch == 0.0) {
+      peer.lookAtPitch = 0.0;
+    }
+  }
+
+  static double _organicBlinkScaleY(double t, double phaseOffset) {
+    final period = 3.1 + ((phaseOffset * 1.37) % 1.9);
+    final localT = (t + phaseOffset * 2.3) % period;
+    const blinkDuration = 0.13;
+    if (localT >= blinkDuration) return 1.0;
+    final phase = localT / blinkDuration;
+    final closed = math.sin(phase * math.pi);
+    return (1.0 - closed * 0.88).clamp(0.12, 1.0);
+  }
+
   void _evaluateLocalLimbs(_PeerRecord peer, double t) {
     _motionScratch.prepare(
       time: t,
       heightMeters: peer.appearance.heightMeters,
       animateIdle: true,
       pose: peer.smoothedPose,
+      extraHeadYaw: peer.lookAtYaw,
+      extraHeadPitch: peer.lookAtPitch,
+      extraBodyYaw: peer.lookAtYaw * 0.24,
+      overrideEyeScaleY: _organicBlinkScaleY(t, peer.phaseOffset),
     );
     for (var i = 0; i < peer.slots.length; i++) {
       final slot = peer.slots[i];
@@ -625,6 +767,7 @@ final class _PeerRecord {
     required this.vx,
     required this.vz,
     required this.pose,
+    vm.Vector3? lookAtTarget,
     required this.lastSequence,
     required this.phaseOffset,
   }) : _appearance = appearance,
@@ -637,6 +780,7 @@ final class _PeerRecord {
        renderZ = z,
        renderYaw = yaw,
        smoothedPose = pose ?? VrAvatarPose.neutral {
+    setExplicitLookAt(lookAtTarget);
     _rebuildPlan();
   }
 
@@ -657,6 +801,29 @@ final class _PeerRecord {
   double renderY;
   double renderZ;
   double renderYaw;
+
+  double smoothedSpeed = 0.0;
+  double walkPhase = 0.0;
+  double lookAtYaw = 0.0;
+  double lookAtPitch = 0.0;
+  bool hasExplicitLookAt = false;
+  double explicitLookAtX = 0.0;
+  double explicitLookAtY = 0.0;
+  double explicitLookAtZ = 0.0;
+
+  void setExplicitLookAt(vm.Vector3? target) {
+    if (target == null ||
+        !target.x.isFinite ||
+        !target.y.isFinite ||
+        !target.z.isFinite) {
+      hasExplicitLookAt = false;
+      return;
+    }
+    hasExplicitLookAt = true;
+    explicitLookAtX = target.x;
+    explicitLookAtY = target.y;
+    explicitLookAtZ = target.z;
+  }
 
   VrAvatarPose? pose;
   VrAvatarPose smoothedPose;

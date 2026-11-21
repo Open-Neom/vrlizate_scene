@@ -204,5 +204,98 @@ void main() {
       expect(walkOut.storage, isNot(orderedEquals(leftLeg.transform.storage)));
       stage.dispose();
     });
+
+    test(
+      'social Look-At Head IK tracks elevated players smoothly, respects anatomical cone, supports explicit gaze targets, and auto-walks moving remote peers',
+      () {
+        final stage = VrPeerAvatarStage(maxPeers: 8);
+        final appearance = VrAvatarAppearance(
+          species: VrAvatarSpecies.human,
+          heightMeters: 1.72,
+        );
+
+        // Avatar at origin facing +Z (yaw = 0).
+        stage.upsertPeer(
+          VrPeerAvatarSnapshot(
+            peerId: 'greeter',
+            appearance: appearance,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            yaw: 0.0,
+          ),
+        );
+        // Remote multiplayer runner with pose == null and vx = 1.6 m/s.
+        stage.upsertPeer(
+          VrPeerAvatarSnapshot(
+            peerId: 'remote_runner',
+            appearance: appearance,
+            x: -1.5,
+            y: 0.0,
+            z: 3.0,
+            yaw: math.pi / 2,
+            vx: 1.6,
+            vz: 0.0,
+          ),
+        );
+
+        // Player stands ahead-left on an elevated terrace (+2.0, 2.55, +4.0).
+        final elevatedViewer = vm.Vector3(2.0, 2.55, 4.0);
+        for (var f = 0; f < 30; f++) {
+          stage.tick(
+            1 / 30,
+            eyePosition: elevatedViewer,
+            viewerForward: vm.Vector3(-0.4, -0.2, -0.9)..normalize(),
+          );
+        }
+
+        final lookYaw = stage.peerLookAtYaw('greeter')!;
+        final lookPitch = stage.peerLookAtPitch('greeter')!;
+        expect(lookYaw, greaterThan(0.25));
+        expect(lookYaw, lessThanOrEqualTo(VrPeerAvatarStage.maxLookAtYawRadians));
+        // Negative pitch tilts local +Z head upward toward elevated Belvedere!
+        expect(lookPitch, lessThan(-0.12));
+        expect(
+          lookPitch,
+          greaterThanOrEqualTo(-VrPeerAvatarStage.maxLookAtUpPitchRadians),
+        );
+
+        // Remote runner automatically synthesizes velocity-driven bipedal stride.
+        expect(stage.peerSmoothedSpeed('remote_runner')!, greaterThan(1.0));
+        expect(stage.peerWalkPhase('remote_runner')!, greaterThan(1.5));
+
+        // Moving player BEHIND the greeter relaxes gaze back to 0 (no owl-neck).
+        final behindViewer = vm.Vector3(0.0, 1.6, -3.0);
+        for (var f = 0; f < 45; f++) {
+          stage.tick(
+            1 / 30,
+            eyePosition: behindViewer,
+            viewerForward: vm.Vector3(0.0, 0.0, 1.0),
+          );
+        }
+        expect(stage.peerLookAtYaw('greeter')!.abs(), lessThan(0.04));
+        expect(stage.peerLookAtPitch('greeter')!.abs(), lessThan(0.04));
+
+        // Explicit partner lookAtTarget (ahead-right) overrides viewer eye.
+        stage.updatePeerMotion(
+          'greeter',
+          x: 0.0,
+          z: 0.0,
+          yaw: 0.0,
+          lookAtTarget: vm.Vector3(-1.8, 1.15, 2.6),
+        );
+        for (var f = 0; f < 30; f++) {
+          stage.tick(
+            1 / 30,
+            eyePosition: behindViewer,
+            viewerForward: vm.Vector3(0.0, 0.0, 1.0),
+          );
+        }
+        expect(stage.peerLookAtYaw('greeter')!, lessThan(-0.25));
+        // Seated target below avatar eye height tilts head slightly downward (+pitch).
+        expect(stage.peerLookAtPitch('greeter')!, greaterThan(0.04));
+        stage.dispose();
+      },
+    );
   });
 }
